@@ -877,6 +877,8 @@ def create_animation_gif(
         ax.text(x, y, node_labels[node], ha='center', va='center', fontsize=8)
 
     # Prepare dynamic artists
+    # Initialise scatter for customers.  Use an empty Nx2 array to avoid
+    # indexing errors in set_offsets when there are no customers yet.
     scat = ax.scatter([], [], s=30, c='blue')
     # Queue bars for selected resources: display bars for kiosk, register, cooks, expo, drinks, condiments, tables
     bar_artists: Dict[str, Rectangle] = {}
@@ -916,7 +918,8 @@ def create_animation_gif(
         return busy_ts[res_key][idx]
 
     def init():
-        scat.set_offsets([])
+        # When no positions exist, set offsets to an empty array of shape (0, 2)
+        scat.set_offsets(np.empty((0, 2)))
         for key in bar_artists:
             bar_artists[key].set_height(0.0)
             queue_texts[key].set_text('')
@@ -966,7 +969,9 @@ def create_animation_gif(
         )
         return [scat, *bar_artists.values(), *queue_texts.values(), top_text]
 
-    anim = FuncAnimation(fig, update, frames=num_frames, init_func=init, blit=True)
+    # Use blit=False to avoid backend issues in headless environments such as
+    # Streamlit Cloud.  Blitting can cause crashes when scatter offsets are empty.
+    anim = FuncAnimation(fig, update, frames=num_frames, init_func=init, blit=False)
     # Save to GIF into a BytesIO buffer
     buf = io.BytesIO()
     writer = PillowWriter(fps=fps)
