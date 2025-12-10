@@ -1036,9 +1036,13 @@ def main():
             busy_json_str = json.dumps(busy_json)
             node_json_str = json.dumps(node_js)
             busy_caps_str = json.dumps(busy_caps)
-            # Canvas size: enlarge for better visibility
-            canvas_width = 1100
-            canvas_height = 450
+            # Canvas size: further enlarge for better visibility.  A wider canvas helps ensure
+            # stations and buttons are not cut off on large screens.  Note that the
+            # width argument on st.components.html is omitted below to allow the
+            # component to expand to the full width of its container.  Only the
+            # height is specified here.
+            canvas_width = 1400
+            canvas_height = 550
             # Build JS and HTML
             js_template = """
             <script src="https://cdn.jsdelivr.net/npm/p5@1.4.2/lib/p5.min.js"></script>
@@ -1203,16 +1207,9 @@ def main():
                     "Animation skipped. Please open the 'Summary Results' tab to view metrics."
                 )
             else:
-                # Static skip button to bypass animation during display
-                if st.button("Skip animation", key="skip_static"):
-                    st.session_state['skip_animation'] = True
-                    st.warning(
-                        "Animation skipped. Please open the 'Summary Results' tab to view metrics."
-                    )
-                if not st.session_state.get('skip_animation', False):
-                    st.components.v1.html(js_code, height=canvas_height + 40, width=canvas_width + 100)
-                else:
-                    st.write("Animation has been skipped.")
+                # Always display the animation when not skipping via sidebar.  Width is omitted
+                # so the component expands to the maximum available space.
+                st.components.v1.html(js_code, height=canvas_height + 50, scrolling=False)
         # Always display summary results in its tab after a run
         with tab_summary:
             st.subheader("Summary Results")
