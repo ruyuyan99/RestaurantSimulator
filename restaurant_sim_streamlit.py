@@ -1,45 +1,40 @@
 """
-Restaurant Simulation with Animation for Streamlit
-==================================================
+Restaurant Simulation with Interactive p5.js Animation for Streamlit
+===================================================================
 
-This Streamlit app provides an interactive interface to run and
-visualise a discrete event simulation (DES) of a fast‑casual
-restaurant.  In addition to numerical analysis and bar charts, this
-version also produces an animated GIF showing customers walking
-between ordering kiosks/registers, pickup, drink/condiment stations,
-and seating.  Queues forming at each resource are displayed as
-vertical bars growing and shrinking in real time.  Top counters show
-how many registers, cooks and expo staff are busy relative to their
-capacity.
+This Streamlit app simulates the operations of a fast‑casual restaurant
+using a discrete event simulation (DES) implemented in pure Python and
+salabim. In addition to producing the familiar numerical summary
+metrics and bar charts for resource utilisation and queue lengths, it
+also renders a smooth, 2D, birds‑eye‑view animation of customers
+walking through the restaurant.
 
-The simulation logic is based on the salabim DES library for
-queueing behaviour, but the animation is implemented from scratch
-using matplotlib so it can run in a browser‑based Streamlit
-environment without relying on Tkinter.
+The animation is powered by `p5.js`, a JavaScript framework for
+creative coding. The simulation runs entirely in Python and produces
+frame data (customer positions, queue lengths, and busy server counts)
+on a regular time grid. This data is passed to a custom HTML canvas
+embedded in the Streamlit interface via `st.components.v1.html`. The
+JavaScript code reads the frame data and draws moving circles for
+customers, vertical queue bars at each station, and busy counters at
+the top of the screen.
 
-Usage
------
-Install the required packages (``salabim``, ``streamlit``, ``pandas``,
-``matplotlib``, and ``numpy``) and run this script with Streamlit::
+To run this app, install the dependencies listed in ``requirements.txt``
+and execute:
 
-    streamlit run restaurant_sim_streamlit_animation.py
+    streamlit run restaurant_sim_streamlit_p5.py
 
-The sidebar allows you to customise the simulation horizon, arrival
-rate, resource capacities and the proportion of customers who use
-kiosks versus registers.  You can also specify how many minutes to
-animate.  After running the simulation, summary metrics and charts
-are displayed, followed by the animated GIF of the first part of the
-run.
+Adjust the simulation parameters in the sidebar, click **Run Simulation
+and Animate**, and watch customers move through the restaurant while
+queue lengths and busy fractions update in real time. Because the
+animation runs entirely client‑side in the browser, it is responsive
+and can scale to many customers without overloading the server.
 """
 
-import io
+import json
 import random
 import statistics
 from typing import Dict, List, Tuple
 
-import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
-from matplotlib.animation import FuncAnimation
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -404,7 +399,7 @@ def schedule_service(res_state: ResourceState, arrival_time: float, mean_service
         res_state.queue_events.append((arrival_time, +1))
         res_state.queue_events.append((start_service, -1))
     else:
-        # Customer does not wait; queue length does not change (but record zero wait as +0)
+        # Customer does not wait; queue length does not change (record zero change)
         res_state.queue_events.append((arrival_time, 0))
     # Schedule service duration
     dur = expov(mean_service)
@@ -462,7 +457,8 @@ def simulate_customers(
         For each resource name, a 1‑D array of busy server counts
         sampled every second.
     """
-    # Define node coordinates (based on earlier animation positions) and normalise to [0, 10] x [0, 4]
+    # Define node coordinates based on the earlier animation positions
+    # and normalise them to [0, 10] x [0, 4] for plotting convenience.
     raw_pos = {
         DOOR:      (50, 250),
         KIOSK:     (250, 120),
@@ -477,7 +473,6 @@ def simulate_customers(
     ys = [p[1] for p in raw_pos.values()]
     min_x, max_x = min(xs), max(xs)
     min_y, max_y = min(ys), max(ys)
-    # Normalise positions so they fit nicely in a [0, 10] x [0, 4] box
     def norm(x: float, y: float) -> Tuple[float, float]:
         return ((x - min_x) / (max_x - min_x) * 10.0,
                 (y - min_y) / (max_y - min_y) * 4.0)
@@ -795,226 +790,102 @@ def simulate_customers(
     return segments, queue_ts, busy_ts
 
 
-def create_animation_gif(
+def generate_animation_frames(
     segments: List[List[Dict[str, float]]],
     queue_ts: Dict[str, np.ndarray],
     busy_ts: Dict[str, np.ndarray],
-    animation_seconds: float,
     capacities: Dict[str, int],
-    filename: str = 'animation.gif',
-    fps: int = 10,
-) -> bytes:
-    """Create an animated GIF from simulation segments and queue/busy time series.
+    anim_seconds: float,
+    dt: float = 0.5,
+) -> Tuple[List[List[Tuple[float, float]]], Dict[str, List[float]], Dict[str, List[float]]]:
+    """Generate per-frame positions and queue/busy series at a specified time step.
 
     Parameters
     ----------
-    segments : list
-        Per‑customer segment data returned by ``simulate_customers``.
-    queue_ts : dict
-        Queue length time series by resource.
-    busy_ts : dict
-        Busy server counts time series by resource.
-    animation_seconds : float
+    segments : List[List[Dict]]
+        Customer movement and wait segments from ``simulate_customers``.
+    queue_ts : Dict[str, np.ndarray]
+        Queue lengths sampled every second.
+    busy_ts : Dict[str, np.ndarray]
+        Busy server counts sampled every second.
+    capacities : Dict[str, int]
+        Capacity of each resource (used to compute busy fractions).
+    anim_seconds : float
         Duration of the animation in seconds.
-    capacities : dict
-        Resource capacities used to compute busy fractions.
-    filename : str, optional
-        Name for the output GIF file.
-    fps : int, optional
-        Frames per second in the animation.
+    dt : float, optional
+        Time step (seconds) between frames.  Default is 0.5s for smooth animation.
 
     Returns
     -------
-    bytes
-        Bytes of the generated GIF.
+    frames : List[List[Tuple[float, float]]]
+        A list of frames; each frame is a list of (x, y) positions for customers
+        active during that time step.  Coordinates are on a normalised scale
+        [0, 10] x [0, 4].  Customers who have finished their path before a
+        given frame are excluded from subsequent frames.
+    queue_series : Dict[str, List[float]]
+        Queue lengths for each resource at each frame (same length as frames).
+    busy_series : Dict[str, List[float]]
+        Busy server counts for each resource at each frame (same length as frames).
     """
-    # Determine time steps; we sample at frame_interval seconds
-    frame_interval = 1.0 / fps
-    num_frames = int(animation_seconds / frame_interval) + 1
-    times = np.linspace(0.0, animation_seconds, num_frames)
+    num_frames = int(anim_seconds / dt) + 1
+    times = np.linspace(0.0, anim_seconds, num_frames)
 
-    # Prepare figure
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.set_xlim(0, 10)
-    ax.set_ylim(0, 4)
-    ax.set_xticks([])
-    ax.set_yticks([])
-    ax.set_title('Restaurant Simulation Animation')
-    # Draw static nodes as rectangles with labels
-    node_coords = {
-        DOOR:      (50, 250),
-        KIOSK:     (250, 120),
-        REGISTER:  (250, 380),
-        PICKUP:    (480, 250),
-        DRINK:     (680, 200),
-        CONDIMENT: (820, 220),
-        SEATING:   (1050, 260),
-        EXIT:      (1250, 260),
-    }
-    xs = [p[0] for p in node_coords.values()]
-    ys = [p[1] for p in node_coords.values()]
-    min_x, max_x = min(xs), max(xs)
-    min_y, max_y = min(ys), max(ys)
-    def norm(x: float, y: float) -> Tuple[float, float]:
-        return ((x - min_x) / (max_x - min_x) * 10.0,
-                (y - min_y) / (max_y - min_y) * 4.0)
-    NODE_COORDS = {node: norm(*pos) for node, pos in node_coords.items()}
-
-    node_labels = {
-        DOOR: 'Door',
-        KIOSK: 'Kiosk',
-        REGISTER: 'Register',
-        PICKUP: 'Pickup',
-        DRINK: 'Drink',
-        CONDIMENT: 'Condiment',
-        SEATING: 'Seating',
-        EXIT: 'Exit',
-    }
-    # Draw node rectangles
-    for node, (x, y) in NODE_COORDS.items():
-        rect = Rectangle((x - 0.3, y - 0.2), 0.6, 0.4, facecolor='lightgray', edgecolor='gray')
-        ax.add_patch(rect)
-        ax.text(x, y, node_labels[node], ha='center', va='center', fontsize=8)
-
-    # Prepare dynamic artists
-    # Initialise scatter for customers.  Use an empty Nx2 array to avoid
-    # indexing errors in set_offsets when there are no customers yet.
-    scat = ax.scatter([], [], s=30, c='blue')
-    # Queue bars for selected resources: display bars for kiosk, register, cooks, expo, drinks, condiments, tables
-    bar_artists: Dict[str, Rectangle] = {}
-    bar_positions = {
-        'kiosks':     (NODE_COORDS[KIOSK][0], NODE_COORDS[KIOSK][1] + 0.3),
-        'registers':  (NODE_COORDS[REGISTER][0], NODE_COORDS[REGISTER][1] + 0.3),
-        'cooks':      (NODE_COORDS[PICKUP][0] - 0.4, NODE_COORDS[PICKUP][1] + 0.3),
-        'expo':       (NODE_COORDS[PICKUP][0] + 0.4, NODE_COORDS[PICKUP][1] + 0.3),
-        'drinks':     (NODE_COORDS[DRINK][0], NODE_COORDS[DRINK][1] + 0.3),
-        'condiments': (NODE_COORDS[CONDIMENT][0], NODE_COORDS[CONDIMENT][1] + 0.3),
-        'tables':     (NODE_COORDS[SEATING][0], NODE_COORDS[SEATING][1] + 0.3),
-    }
-    for key, (bx, by) in bar_positions.items():
-        bar = Rectangle((bx - 0.05, by), 0.1, 0.0, facecolor='darkgray', edgecolor='none')
-        ax.add_patch(bar)
-        bar_artists[key] = bar
-    # Text for queue lengths
-    queue_texts: Dict[str, any] = {}
-    for key, (bx, by) in bar_positions.items():
-        qt = ax.text(bx, by + 0.05, '', ha='center', va='bottom', fontsize=6)
-        queue_texts[key] = qt
-    # Top counters for busy fractions (registers, cooks, expo)
-    top_text = ax.text(0.5, 3.8, '', ha='left', va='center', fontsize=8)
-
-    # Flatten segments into a list of segments with pointers to current segment index per customer
+    # Prepare per-customer state to track which segment index applies at time t
     customer_states = []
     for cust_segments in segments:
         if cust_segments:
             customer_states.append({'segments': cust_segments, 'index': 0})
 
-    # Precompute queue lengths and busy counts at each frame time
-    def get_queue_length(res_key: str, t: float) -> float:
-        idx = int(min(max(int(t), 0), len(queue_ts[res_key]) - 1))
-        return queue_ts[res_key][idx]
-    def get_busy_count(res_key: str, t: float) -> float:
-        idx = int(min(max(int(t), 0), len(busy_ts[res_key]) - 1))
-        return busy_ts[res_key][idx]
+    frames: List[List[Tuple[float, float]]] = []
+    # Queue and busy series lists
+    queue_series: Dict[str, List[float]] = {key: [] for key in queue_ts.keys()}
+    busy_series: Dict[str, List[float]] = {key: [] for key in busy_ts.keys()}
 
-    def init():
-        # When no positions exist, set offsets to an empty array of shape (0, 2)
-        scat.set_offsets(np.empty((0, 2)))
-        for key in bar_artists:
-            bar_artists[key].set_height(0.0)
-            queue_texts[key].set_text('')
-        top_text.set_text('')
-        return [scat, *bar_artists.values(), *queue_texts.values(), top_text]
-
-    def update(frame: int):
-        t = times[frame]
-        # Update positions
-        pos_list: List[Tuple[float, float]] = []
+    for t in times:
+        positions: List[Tuple[float, float]] = []
         for state in customer_states:
             segs = state['segments']
             i = state['index']
-            # Advance segment index if necessary
+            # Advance segment index if t >= end_time
             while i < len(segs) and t >= segs[i]['end_time']:
                 i += 1
             state['index'] = i
             if i < len(segs) and segs[i]['start_time'] <= t < segs[i]['end_time']:
                 seg = segs[i]
                 if seg['wait'] or seg['end_time'] == seg['start_time']:
-                    # stay at fixed position
-                    pos_list.append((seg['x0'], seg['y0']))
+                    positions.append((seg['x0'], seg['y0']))
                 else:
+                    # Linear interpolation along the path
                     frac = (t - seg['start_time']) / (seg['end_time'] - seg['start_time']) if seg['end_time'] > seg['start_time'] else 0.0
                     x = seg['x0'] + frac * (seg['x1'] - seg['x0'])
                     y = seg['y0'] + frac * (seg['y1'] - seg['y0'])
-                    pos_list.append((x, y))
-        scat.set_offsets(pos_list)
+                    positions.append((x, y))
+        frames.append(positions)
+        # Append queue lengths (sampled at integer seconds)
+        idx_sec = int(min(max(int(t), 0), len(queue_ts['kiosks']) - 1))
+        for key in queue_ts.keys():
+            queue_series[key].append(float(queue_ts[key][idx_sec]))
+        # Append busy server counts (sampled at integer seconds)
+        for key in busy_ts.keys():
+            busy_series[key].append(float(busy_ts[key][idx_sec]))
 
-        # Update queue bars and queue length text
-        for key in bar_artists:
-            qlen = get_queue_length(key, t)
-            height = 0.05 * qlen  # scale factor for bar height
-            bar_artists[key].set_height(height)
-            queue_texts[key].set_text(f'Q: {int(qlen)}')
-        # Update top counters for busy resources
-        b_regs = get_busy_count('registers', t)
-        b_cooks = get_busy_count('cooks', t)
-        b_expo  = get_busy_count('expo', t)
-        cap_regs = capacities.get('registers', 1)
-        cap_cooks = capacities.get('cooks', 1)
-        cap_expo  = capacities.get('expo', 1)
-        top_text.set_text(
-            f'Registers: {int(b_regs)}/{cap_regs}   '
-            f'Cooks: {int(b_cooks)}/{cap_cooks}   '
-            f'Expo: {int(b_expo)}/{cap_expo}'
-        )
-        return [scat, *bar_artists.values(), *queue_texts.values(), top_text]
-
-    # Use blit=False to avoid backend issues in headless environments such as
-    # Streamlit Cloud.  Blitting can cause crashes when scatter offsets are empty.
-    # Instead of using PillowWriter (which requires a filename and can lead to
-    # errors in certain environments), we manually iterate over frames,
-    # update the figure, and capture each frame as a PIL image.  We then
-    # assemble these images into a GIF using Pillow directly.
-    # Create images list
-    from PIL import Image
-    images: List[Image.Image] = []  # type: ignore[assignment]
-    for frame in range(num_frames):
-        update(frame)
-        # Draw the canvas and convert to an array
-        fig.canvas.draw()
-        width, height = fig.canvas.get_width_height()
-        im = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape(height, width, 3)
-        images.append(Image.fromarray(im))
-    # Save images to a temporary file
-    import tempfile
-    import os
-    with tempfile.NamedTemporaryFile(suffix='.gif', delete=False) as tmp:
-        temp_path = tmp.name
-    try:
-        # Save the GIF. duration in milliseconds; loop=0 for infinite looping
-        images[0].save(temp_path, save_all=True, append_images=images[1:], duration=int(1000/fps), loop=0)
-        plt.close(fig)
-        with open(temp_path, 'rb') as f:
-            data = f.read()
-    finally:
-        try:
-            os.remove(temp_path)
-        except OSError:
-            pass
-    return data
+    return frames, queue_series, busy_series
 
 
 # ----------------------------------------------------------------------------
 # Streamlit interface
 # ----------------------------------------------------------------------------
 def main():
-    st.set_page_config(page_title="Restaurant DES with Animation", layout="wide")
-    st.title("🍽️ Restaurant Discrete Event Simulation with Animation")
+    st.set_page_config(page_title="Restaurant DES with p5.js Animation", layout="wide")
+    st.title("🍽️ Restaurant Discrete Event Simulation with Interactive Animation")
     st.write(
         "This interactive app simulates a fast casual restaurant. Adjust the\n"
-        "parameters in the sidebar and click **Run Simulation** to see how\n"
-        "changes affect throughput, waiting times, and resource utilization.\n"
-        "You can also generate an animated GIF showing the first part of the run."
+        "parameters in the sidebar and click **Run Simulation and Animate**\n"
+        "to see how changes affect throughput, waiting times, and resource utilisation.\n"
+        "An interactive animation shows customers walking through the restaurant\n"
+        "layout, queues forming at each station, and real‑time busy fractions for\n"
+        "registers, cooks and expo staff. The animation is rendered client‑side\n"
+        "using p5.js for smooth, responsive visuals."
     )
 
     # Sidebar controls
@@ -1033,7 +904,8 @@ def main():
 
     st.sidebar.subheader("Seating")
     table_cap = st.sidebar.number_input(
-        "Total seats (sum over tables)", min_value=0, max_value=200, value=sum({2: 18, 4: 10}.values()) * 2, step=2
+        "Total seats (sum over tables)", min_value=0, max_value=200,
+        value=sum({2: 18, 4: 10}.values()) * 2, step=2
     )
 
     st.sidebar.subheader("Animation")
@@ -1076,68 +948,228 @@ def main():
                 pct_to_kiosk=pct_to_kiosk,
                 animation_seconds=anim_seconds,
             )
-            # Create GIF
-            gif_bytes = create_animation_gif(
+            # Generate frame data for the animation (0.5s time step for smoothness)
+            dt = 0.5
+            frames, queue_series, busy_series = generate_animation_frames(
                 segments=segs,
                 queue_ts=qts,
                 busy_ts=bts,
-                animation_seconds=anim_seconds,
                 capacities=caps,
-                filename='restaurant_animation.gif',
-                fps=int(fps),
+                anim_seconds=anim_seconds,
+                dt=dt,
             )
-        # Display summary metrics
-        st.subheader("Summary Results")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Customers served", results["served"])
-        c2.metric("Avg time in system (min)", f"{results['avg_time_min']:.2f}" if results['served'] > 0 else "NA")
-        c3.metric("90th percentile time (min)", f"{results['p90_time_min']:.2f}" if results['served'] >= 10 else "NA")
+            # Convert frames to a serialisable structure: list of lists of [x, y]
+            frames_list = [[list(pos) for pos in frame] for frame in frames]
+            # Convert queue/busy series to lists
+            queue_json = {k: [float(x) for x in v] for k, v in queue_series.items()}
+            busy_json = {k: [float(x) for x in v] for k, v in busy_series.items()}
 
-        # Display utilization bar chart
-        util_data = pd.DataFrame({
-            'Resource': [
-                'Kiosk', 'Register', 'Cook', 'Expo', 'Drink', 'Condiment', 'Tables'
-            ],
-            'Utilization': [
-                results['util_kiosks'],
-                results['util_registers'],
-                results['util_cooks'],
-                results['util_expo'],
-                results['util_drinks'],
-                results['util_condiments'],
-                results['util_tables'],
-            ],
-        })
-        st.subheader("Resource Utilization")
-        st.bar_chart(util_data.set_index('Resource'))
+            # Node positions for JavaScript (normalised [0,10]x[0,4])
+            # These must correspond to the positions used in simulate_customers
+            node_coords = {
+                'door':      (50, 250),
+                'kiosk':     (250, 120),
+                'register':  (250, 380),
+                'pickup':    (480, 250),
+                'drink':     (680, 200),
+                'condiment': (820, 220),
+                'seating':   (1050, 260),
+                'exit':      (1250, 260),
+            }
+            xs = [p[0] for p in node_coords.values()]
+            ys = [p[1] for p in node_coords.values()]
+            min_x, max_x = min(xs), max(xs)
+            min_y, max_y = min(ys), max(ys)
+            def norm_js(x: float, y: float) -> Tuple[float, float]:
+                return ((x - min_x) / (max_x - min_x) * 10.0,
+                        (y - min_y) / (max_y - min_y) * 4.0)
+            node_js = {name: norm_js(*pos) for name, pos in node_coords.items()}
 
-        # Display average queue lengths bar chart
-        qlen_data = pd.DataFrame({
-            'Resource': [
-                'Kiosk', 'Register', 'Cook', 'Expo', 'Drink', 'Condiment', 'Tables'
-            ],
-            'Avg Queue Length': [
-                results['qlen_kiosks'],
-                results['qlen_registers'],
-                results['qlen_cooks'],
-                results['qlen_expo'],
-                results['qlen_drinks'],
-                results['qlen_condiments'],
-                results['qlen_tables'],
-            ],
-        })
-        st.subheader("Average Queue Lengths")
-        st.bar_chart(qlen_data.set_index('Resource'))
+            # Prepare capacities for busy counters
+            busy_caps = {
+                'registers': caps.get('registers', 1),
+                'cooks': caps.get('cooks', 1),
+                'expo': caps.get('expo', 1),
+            }
 
-        # Display the animated GIF
-        st.subheader(f"Animation (first {anim_minutes} minutes)")
-        st.image(gif_bytes, caption="Customer movement and queue lengths", use_column_width=True)
+            # Assemble HTML and JavaScript for animation
+            # Encode data as JSON
+            frames_json = json.dumps(frames_list)
+            queue_json_str = json.dumps(queue_json)
+            busy_json_str = json.dumps(busy_json)
+            node_json_str = json.dumps(node_js)
+            busy_caps_str = json.dumps(busy_caps)
 
-        st.write(
-            "The simulation model is stochastic; running it multiple times may\n"
-            "yield slightly different results. Adjust the parameters and click\n"
-            "**Run Simulation and Animate** again to explore different scenarios."
-        )
+            # Determine canvas size (scaled from normalised coordinates)
+            canvas_width = 800
+            canvas_height = 320
+            # JavaScript code for p5.js animation.  Use instance mode to avoid global pollution.
+            # Build the JavaScript and HTML code using str.format to avoid
+            # accidental f-string interpolation of braces.  We double the
+            # braces in the JavaScript templates to escape them for .format().
+            js_template = """
+            <script src="https://cdn.jsdelivr.net/npm/p5@1.4.2/lib/p5.min.js"></script>
+            <div id="p5-container"></div>
+            <script>
+            const frames = {frames_json};
+            const queueSeries = {queue_json};
+            const busySeries = {busy_json};
+            const nodePos = {node_json};
+            const busyCaps = {busy_caps};
+            const dt = {dt_value};
+            const fps = {fps_value};
+            const canvasW = {canvas_w};
+            const canvasH = {canvas_h};
+
+            // Create the p5 sketch
+            const sketch = (p) => {{
+              let frameIndex = 0;
+              p.setup = () => {{
+                p.createCanvas(canvasW, canvasH);
+                p.frameRate(fps);
+              }};
+              p.draw = () => {{
+                p.background(255);
+                // Draw static nodes (scaled from normalised positions)
+                const rectW = 60;
+                const rectH = 40;
+                const scaleX = canvasW / 10.0;
+                const scaleY = canvasH / 4.0;
+                // Node labels and positions
+                const labels = {{
+                  'door': 'Door',
+                  'kiosk': 'Kiosk',
+                  'register': 'Register',
+                  'pickup': 'Pickup',
+                  'drink': 'Drink',
+                  'condiment': 'Condiment',
+                  'seating': 'Seating',
+                  'exit': 'Exit'
+                }};
+                for (const [name, pos] of Object.entries(nodePos)) {{
+                  const x = pos[0] * scaleX;
+                  const y = pos[1] * scaleY;
+                  p.fill(230);
+                  p.stroke(180);
+                  p.rect(x - rectW/2, y - rectH/2, rectW, rectH, 5);
+                  p.fill(50);
+                  p.noStroke();
+                  p.textAlign(p.CENTER, p.CENTER);
+                  p.textSize(12);
+                  p.text(labels[name], x, y);
+                }}
+                // Draw queue bars and counts
+                const barScale = 10; // pixels per person in queue
+                const barWidth = 8;
+                // Specific bar positions relative to stations
+                const barPositions = {{
+                  'kiosks': nodePos['kiosk'],
+                  'registers': nodePos['register'],
+                  'cooks': [nodePos['pickup'][0] - 0.3, nodePos['pickup'][1]],
+                  'expo': [nodePos['pickup'][0] + 0.3, nodePos['pickup'][1]],
+                  'drinks': nodePos['drink'],
+                  'condiments': nodePos['condiment'],
+                  'tables': nodePos['seating']
+                }};
+                for (const [key, pos] of Object.entries(barPositions)) {{
+                  const q = queueSeries[key][frameIndex] || 0;
+                  const x = pos[0] * scaleX;
+                  const y = pos[1] * scaleY;
+                  const h = q * barScale;
+                  p.fill(120);
+                  p.rect(x - barWidth/2, y - rectH/2 - h - 5, barWidth, h);
+                  p.fill(50);
+                  p.textSize(8);
+                  p.textAlign(p.CENTER, p.BOTTOM);
+                  p.text('Q: ' + Math.floor(q), x, y - rectH/2 - h - 8);
+                }}
+                // Draw busy counters at top
+                const br = busySeries['registers'][frameIndex] || 0;
+                const bc = busySeries['cooks'][frameIndex] || 0;
+                const be = busySeries['expo'][frameIndex] || 0;
+                const txt = 'Registers: ' + Math.floor(br) + '/' + busyCaps['registers'] + '   Cooks: ' + Math.floor(bc) + '/' + busyCaps['cooks'] + '   Expo: ' + Math.floor(be) + '/' + busyCaps['expo'];
+                p.fill(50);
+                p.textSize(12);
+                p.textAlign(p.LEFT, p.TOP);
+                p.text(txt, 10, 10);
+                // Draw customers
+                const positions = frames[frameIndex] || [];
+                p.fill(0, 102, 204);
+                p.noStroke();
+                for (const pos of positions) {{
+                  const x = pos[0] * scaleX;
+                  const y = pos[1] * scaleY;
+                  p.ellipse(x, y, 10, 10);
+                }}
+                // Advance frame
+                frameIndex++;
+                if (frameIndex >= frames.length) {{
+                  frameIndex = frames.length - 1; // stop at last frame
+                }}
+              }};
+            }};
+            // Create a new p5 instance
+            new p5(sketch, document.getElementById('p5-container'));
+            </script>
+            """
+            js_code = js_template.format(
+                frames_json=frames_json,
+                queue_json=queue_json_str,
+                busy_json=busy_json_str,
+                node_json=node_json_str,
+                busy_caps=busy_caps_str,
+                dt_value=dt,
+                fps_value=fps,
+                canvas_w=canvas_width,
+                canvas_h=canvas_height,
+            )
+            # Render the dynamic content
+            st.subheader("Summary Results")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Customers served", results["served"])
+            c2.metric("Avg time in system (min)", f"{results['avg_time_min']:.2f}" if results['served'] > 0 else "NA")
+            c3.metric("90th percentile time (min)", f"{results['p90_time_min']:.2f}" if results['served'] >= 10 else "NA")
+
+            # Display utilisation bar chart
+            util_data = pd.DataFrame({
+                'Resource': [
+                    'Kiosk', 'Register', 'Cook', 'Expo', 'Drink', 'Condiment', 'Tables'
+                ],
+                'Utilisation': [
+                    results['util_kiosks'],
+                    results['util_registers'],
+                    results['util_cooks'],
+                    results['util_expo'],
+                    results['util_drinks'],
+                    results['util_condiments'],
+                    results['util_tables'],
+                ],
+            })
+            st.subheader("Resource Utilisation")
+            st.bar_chart(util_data.set_index('Resource'))
+
+            # Display average queue lengths bar chart
+            qlen_data = pd.DataFrame({
+                'Resource': [
+                    'Kiosk', 'Register', 'Cook', 'Expo', 'Drink', 'Condiment', 'Tables'
+                ],
+                'Avg Queue Length': [
+                    results['qlen_kiosks'],
+                    results['qlen_registers'],
+                    results['qlen_cooks'],
+                    results['qlen_expo'],
+                    results['qlen_drinks'],
+                    results['qlen_condiments'],
+                    results['qlen_tables'],
+                ],
+            })
+            st.subheader("Average Queue Lengths")
+            st.bar_chart(qlen_data.set_index('Resource'))
+
+            # Display the animation
+            st.subheader(f"Animation (first {anim_minutes} minutes)")
+            # Use components.html to embed the p5.js animation
+            st.components.v1.html(js_code, height=canvas_height + 20, width=canvas_width)
 
 
 if __name__ == "__main__":
