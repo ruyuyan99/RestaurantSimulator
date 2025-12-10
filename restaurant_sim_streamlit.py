@@ -949,11 +949,13 @@ def main():
         help="Number of minutes of simulated time compressed into one second of animation."
     )
 
+    # Trigger to run simulation.  When pressed, results will be stored in session_state
     run_button = st.sidebar.button("Run Simulation and Animate")
 
     # Use Streamlit tabs to separate animation from summary results
     tab_animation, tab_summary = st.tabs(["Animation", "Summary Results"])
 
+    # When run_button is clicked, run the simulations and store results in session_state
     if run_button:
         with st.spinner("Running simulation and preparing data, please wait..."):
             # Run simulation using salabim for summary metrics
@@ -1167,9 +1169,36 @@ def main():
                 canvas_w=canvas_width,
                 canvas_h=canvas_height,
             )
+        # Store results in session state so they persist on interactions
+        st.session_state['results'] = results
+        st.session_state['util_data'] = pd.DataFrame({
+            'Resource': ['Kiosk', 'Register', 'Cook', 'Expo', 'Drink', 'Condiment', 'Tables'],
+            'Utilisation': [
+                results['util_kiosks'],
+                results['util_registers'],
+                results['util_cooks'],
+                results['util_expo'],
+                results['util_drinks'],
+                results['util_condiments'],
+                results['util_tables'],
+            ],
+        })
+        st.session_state['qlen_data'] = pd.DataFrame({
+            'Resource': ['Kiosk', 'Register', 'Cook', 'Expo', 'Drink', 'Condiment', 'Tables'],
+            'Avg Queue Length': [
+                results['qlen_kiosks'],
+                results['qlen_registers'],
+                results['qlen_cooks'],
+                results['qlen_expo'],
+                results['qlen_drinks'],
+                results['qlen_condiments'],
+                results['qlen_tables'],
+            ],
+        })
         # After simulation and frame generation, render results and animation in tabs
         with tab_animation:
             if skip_animation:
+                # Skip entire animation if selected in sidebar
                 st.warning(
                     "Animation skipped. Please open the 'Summary Results' tab to view metrics."
                 )
@@ -1180,60 +1209,34 @@ def main():
                     st.warning(
                         "Animation skipped. Please open the 'Summary Results' tab to view metrics."
                     )
-                # Display the animation HTML only if not skipped via session state
                 if not st.session_state.get('skip_animation', False):
-                    st.components.v1.html(js_code, height=canvas_height + 30, width=canvas_width)
+                    st.components.v1.html(js_code, height=canvas_height + 40, width=canvas_width + 100)
                 else:
                     st.write("Animation has been skipped.")
-        # Summary tab: always show summary after simulation
+        # Always display summary results in its tab after a run
         with tab_summary:
             st.subheader("Summary Results")
-            c1, c2, c3 = st.columns(3)
-            c1.metric(
-                "Customers served", results["served"]
-            )
-            c2.metric(
-                "Avg time in system (min)",
-                f"{results['avg_time_min']:.2f}" if results['served'] > 0 else "NA"
-            )
-            c3.metric(
-                "90th percentile time (min)",
-                f"{results['p90_time_min']:.2f}" if results['served'] >= 10 else "NA"
-            )
-            util_data = pd.DataFrame({
-                'Resource': [
-                    'Kiosk', 'Register', 'Cook', 'Expo', 'Drink', 'Condiment', 'Tables'
-                ],
-                'Utilisation': [
-                    results['util_kiosks'],
-                    results['util_registers'],
-                    results['util_cooks'],
-                    results['util_expo'],
-                    results['util_drinks'],
-                    results['util_condiments'],
-                    results['util_tables'],
-                ],
-            })
-            st.subheader("Resource Utilisation")
-            st.bar_chart(util_data.set_index('Resource'))
-            qlen_data = pd.DataFrame({
-                'Resource': [
-                    'Kiosk', 'Register', 'Cook', 'Expo', 'Drink', 'Condiment', 'Tables'
-                ],
-                'Avg Queue Length': [
-                    results['qlen_kiosks'],
-                    results['qlen_registers'],
-                    results['qlen_cooks'],
-                    results['qlen_expo'],
-                    results['qlen_drinks'],
-                    results['qlen_condiments'],
-                    results['qlen_tables'],
-                ],
-            })
-            st.subheader("Average Queue Lengths")
-            st.bar_chart(qlen_data.set_index('Resource'))
-    # If run_button not pressed, show a placeholder in summary tab
-    if not run_button:
+            # Retrieve stored results
+            res = st.session_state.get('results', None)
+            if res:
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Customers served", res["served"])
+                c2.metric(
+                    "Avg time in system (min)",
+                    f"{res['avg_time_min']:.2f}" if res['served'] > 0 else "NA"
+                )
+                c3.metric(
+                    "90th percentile time (min)",
+                    f"{res['p90_time_min']:.2f}" if res['served'] >= 10 else "NA"
+                )
+                st.subheader("Resource Utilisation")
+                st.bar_chart(st.session_state['util_data'].set_index('Resource'))
+                st.subheader("Average Queue Lengths")
+                st.bar_chart(st.session_state['qlen_data'].set_index('Resource'))
+            else:
+                st.info("Run the simulation to see summary results.")
+    # If no run has occurred yet, present placeholder in summary tab
+    if not run_button and 'results' not in st.session_state:
         with tab_summary:
             st.info("Run the simulation to see summary results.")
 
