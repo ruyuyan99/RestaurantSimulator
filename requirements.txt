@@ -4,3 +4,5 @@ salabim>=25.0.15
 pandas>=1.5
 numpy>=1.24
 python-dateutil>=2.8
+matplotlib>=3.7
+pillow>=9.4
