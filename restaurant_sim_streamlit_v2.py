@@ -910,20 +910,7 @@ def main():
 
     st.sidebar.subheader("Animation")
     anim_minutes = st.sidebar.slider("Animate first X minutes", 1, 60, 10)
-
     fps = st.sidebar.select_slider("Animation FPS", options=[5, 10, 15], value=10)
-
-    # Speedup factor: how many minutes of simulation should be shown per real second.  
-    # For example, a value of 1 means one minute of simulation time is compressed into one second of real time.  
-    # This affects the time step ``dt`` used when generating animation frames (dt = (speedup * 60) / fps).
-    sim_speedup = st.sidebar.slider(
-        "Simulation speedup (minutes per second)",
-        min_value=1,
-        max_value=10,
-        value=1,
-        step=1,
-        help="How many minutes of simulated time should play out during one second of animation."
-    )
 
     run_button = st.sidebar.button("Run Simulation and Animate")
 
@@ -961,11 +948,8 @@ def main():
                 pct_to_kiosk=pct_to_kiosk,
                 animation_seconds=anim_seconds,
             )
-            # Determine dt based on desired simulation speedup.  
-            # dt represents simulation seconds per frame.  We compress ``sim_speedup`` minutes of simulation
-            # into one real second, with ``fps`` frames per second.  Therefore, each frame advances
-            # ``(sim_speedup * 60) / fps`` seconds of simulation.
-            dt = (sim_speedup * 60.0) / float(fps)
+            # Generate frame data for the animation (0.5s time step for smoothness)
+            dt = 0.5
             frames, queue_series, busy_series = generate_animation_frames(
                 segments=segs,
                 queue_ts=qts,
