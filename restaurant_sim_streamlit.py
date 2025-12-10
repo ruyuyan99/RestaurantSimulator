@@ -39,7 +39,7 @@ from typing import Dict, List, Tuple
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
-from matplotlib.animation import FuncAnimation, PillowWriter
+from matplotlib.animation import FuncAnimation
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -971,25 +971,32 @@ def create_animation_gif(
 
     # Use blit=False to avoid backend issues in headless environments such as
     # Streamlit Cloud.  Blitting can cause crashes when scatter offsets are empty.
-    anim = FuncAnimation(fig, update, frames=num_frames, init_func=init, blit=False)
-    # Save the animation to a temporary file and then load the bytes.  Writing
-    # directly to a BytesIO does not work with PillowWriter because Animation.save
-    # expects a filename (path-like).  A NamedTemporaryFile ensures the path
-    # exists and can be cleaned up.
+    # Instead of using PillowWriter (which requires a filename and can lead to
+    # errors in certain environments), we manually iterate over frames,
+    # update the figure, and capture each frame as a PIL image.  We then
+    # assemble these images into a GIF using Pillow directly.
+    # Create images list
+    from PIL import Image
+    images: List[Image.Image] = []  # type: ignore[assignment]
+    for frame in range(num_frames):
+        update(frame)
+        # Draw the canvas and convert to an array
+        fig.canvas.draw()
+        width, height = fig.canvas.get_width_height()
+        im = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape(height, width, 3)
+        images.append(Image.fromarray(im))
+    # Save images to a temporary file
     import tempfile
     import os
-    writer = PillowWriter(fps=fps)
-    # Create a temporary GIF file
     with tempfile.NamedTemporaryFile(suffix='.gif', delete=False) as tmp:
         temp_path = tmp.name
     try:
-        anim.save(temp_path, writer=writer)
+        # Save the GIF. duration in milliseconds; loop=0 for infinite looping
+        images[0].save(temp_path, save_all=True, append_images=images[1:], duration=int(1000/fps), loop=0)
         plt.close(fig)
-        # Read back the bytes
         with open(temp_path, 'rb') as f:
             data = f.read()
     finally:
-        # Clean up the temporary file
         try:
             os.remove(temp_path)
         except OSError:
