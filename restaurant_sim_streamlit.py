@@ -972,13 +972,29 @@ def create_animation_gif(
     # Use blit=False to avoid backend issues in headless environments such as
     # Streamlit Cloud.  Blitting can cause crashes when scatter offsets are empty.
     anim = FuncAnimation(fig, update, frames=num_frames, init_func=init, blit=False)
-    # Save to GIF into a BytesIO buffer
-    buf = io.BytesIO()
+    # Save the animation to a temporary file and then load the bytes.  Writing
+    # directly to a BytesIO does not work with PillowWriter because Animation.save
+    # expects a filename (path-like).  A NamedTemporaryFile ensures the path
+    # exists and can be cleaned up.
+    import tempfile
+    import os
     writer = PillowWriter(fps=fps)
-    anim.save(buf, writer=writer)
-    plt.close(fig)
-    buf.seek(0)
-    return buf.read()
+    # Create a temporary GIF file
+    with tempfile.NamedTemporaryFile(suffix='.gif', delete=False) as tmp:
+        temp_path = tmp.name
+    try:
+        anim.save(temp_path, writer=writer)
+        plt.close(fig)
+        # Read back the bytes
+        with open(temp_path, 'rb') as f:
+            data = f.read()
+    finally:
+        # Clean up the temporary file
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+    return data
 
 
 # ----------------------------------------------------------------------------
