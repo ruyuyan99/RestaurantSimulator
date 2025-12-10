@@ -876,57 +876,31 @@ def generate_animation_frames(
 # Streamlit interface
 # ----------------------------------------------------------------------------
 def main():
-    """
-    Entry point for the Streamlit application.
-
-    The layout is organised into two tabs: **Animation** and **Summary Results**.
-    Users configure parameters in the sidebar and click the run button to
-    execute the simulation.  The animation tab displays a p5.js canvas
-    showing the restaurant layout and animated customers, along with
-    pause/resume and skip controls.  A static skip button allows
-    users to bypass the animation entirely.  The summary tab presents
-    throughput and performance metrics after the simulation completes.
-    """
     st.set_page_config(page_title="Restaurant DES with p5.js Animation", layout="wide")
     st.title("🍽️ Restaurant Discrete Event Simulation with Interactive Animation")
     st.write(
         "This interactive app simulates a fast casual restaurant. Adjust the\n"
         "parameters in the sidebar and click **Run Simulation and Animate**\n"
         "to see how changes affect throughput, waiting times, and resource utilisation.\n"
-        "A 2D animation shows customers walking through the restaurant layout,\n"
-        "queues forming at each station, and real‑time busy fractions for\n"
-        "registers, cooks and expo staff."
+        "An interactive animation shows customers walking through the restaurant\n"
+        "layout, queues forming at each station, and real‑time busy fractions for\n"
+        "registers, cooks and expo staff. The animation is rendered client‑side\n"
+        "using p5.js for smooth, responsive visuals."
     )
 
     # Sidebar controls
     st.sidebar.header("Simulation Parameters")
     sim_hours = st.sidebar.slider("Simulation duration (hours)", 1, 12, DEFAULT_SIM_HOURS)
-    arrival_rate = st.sidebar.slider(
-        "Arrival rate (customers per minute)", 0.1, 5.0, DEFAULT_ARRIVAL_RATE, 0.1
-    )
-    pct_to_kiosk = st.sidebar.slider(
-        "Fraction choosing kiosk", 0.0, 1.0, 0.75, 0.05
-    )
+    arrival_rate = st.sidebar.slider("Arrival rate (customers per minute)", 0.1, 5.0, DEFAULT_ARRIVAL_RATE, 0.1)
+    pct_to_kiosk = st.sidebar.slider("Fraction choosing kiosk", 0.0, 1.0, 0.75, 0.05)
 
     st.sidebar.subheader("Resource capacities")
-    n_kiosks = st.sidebar.number_input(
-        "Number of kiosks", min_value=0, max_value=20, value=6, step=1
-    )
-    n_registers = st.sidebar.number_input(
-        "Number of registers", min_value=0, max_value=20, value=2, step=1
-    )
-    n_cooks = st.sidebar.number_input(
-        "Number of cooks", min_value=0, max_value=20, value=5, step=1
-    )
-    n_expo = st.sidebar.number_input(
-        "Number of expo staff", min_value=0, max_value=20, value=1, step=1
-    )
-    n_drinks = st.sidebar.number_input(
-        "Number of drink stations", min_value=0, max_value=20, value=2, step=1
-    )
-    n_condiments = st.sidebar.number_input(
-        "Number of condiment stations", min_value=0, max_value=20, value=2, step=1
-    )
+    n_kiosks = st.sidebar.number_input("Number of kiosks", min_value=0, max_value=20, value=6, step=1)
+    n_registers = st.sidebar.number_input("Number of registers", min_value=0, max_value=20, value=2, step=1)
+    n_cooks = st.sidebar.number_input("Number of cooks", min_value=0, max_value=20, value=5, step=1)
+    n_expo = st.sidebar.number_input("Number of expo staff", min_value=0, max_value=20, value=1, step=1)
+    n_drinks = st.sidebar.number_input("Number of drink stations", min_value=0, max_value=20, value=2, step=1)
+    n_condiments = st.sidebar.number_input("Number of condiment stations", min_value=0, max_value=20, value=2, step=1)
 
     st.sidebar.subheader("Seating")
     table_cap = st.sidebar.number_input(
@@ -934,29 +908,28 @@ def main():
         value=sum({2: 18, 4: 10}.values()) * 2, step=2
     )
 
-    st.sidebar.subheader("Animation controls")
-    # Static skip option to bypass animation generation entirely
-    skip_animation = st.sidebar.checkbox(
-        "Skip animation",
-        value=False,
-        help="Check to bypass the animation and display only summary results."
-    )
-    fps = st.sidebar.select_slider(
-        "Animation FPS", options=[5, 10, 15], value=10
-    )
+    st.sidebar.subheader("Animation")
+    anim_minutes = st.sidebar.slider("Animate first X minutes", 1, 60, 10)
+
+    fps = st.sidebar.select_slider("Animation FPS", options=[5, 10, 15], value=10)
+
+    # Speedup factor: how many minutes of simulation should be shown per real second.  
+    # For example, a value of 1 means one minute of simulation time is compressed into one second of real time.  
+    # This affects the time step ``dt`` used when generating animation frames (dt = (speedup * 60) / fps).
     sim_speedup = st.sidebar.slider(
-        "Simulation speedup (minutes per second)", min_value=1, max_value=10, value=1, step=1,
-        help="Number of minutes of simulated time compressed into one second of animation."
+        "Simulation speedup (minutes per second)",
+        min_value=1,
+        max_value=10,
+        value=1,
+        step=1,
+        help="How many minutes of simulated time should play out during one second of animation."
     )
 
     run_button = st.sidebar.button("Run Simulation and Animate")
 
-    # Use Streamlit tabs to separate animation from summary results
-    tab_animation, tab_summary = st.tabs(["Animation", "Summary Results"])
-
     if run_button:
-        with st.spinner("Running simulation and preparing data, please wait..."):
-            # Run simulation using salabim for summary metrics
+        with st.spinner("Running simulation and generating animation, please wait..."):
+            # Run the salabim simulation for full horizon to collect stats
             results = run_simulation(
                 sim_hours=sim_hours,
                 arrival_rate=arrival_rate,
@@ -979,8 +952,8 @@ def main():
                 'condiments': int(n_condiments),
                 'tables': int(table_cap),
             }
-            anim_seconds = sim_hours * 3600.0
-            # Run custom simulation to obtain segments and queue/busy time series
+            anim_seconds = anim_minutes * 60.0
+            # Run custom simulation for the animation horizon
             segs, qts, bts = simulate_customers(
                 sim_hours=sim_hours,
                 arrival_rate=arrival_rate,
@@ -988,7 +961,10 @@ def main():
                 pct_to_kiosk=pct_to_kiosk,
                 animation_seconds=anim_seconds,
             )
-            # Determine dt based on speedup and FPS
+            # Determine dt based on desired simulation speedup.  
+            # dt represents simulation seconds per frame.  We compress ``sim_speedup`` minutes of simulation
+            # into one real second, with ``fps`` frames per second.  Therefore, each frame advances
+            # ``(sim_speedup * 60) / fps`` seconds of simulation.
             dt = (sim_speedup * 60.0) / float(fps)
             frames, queue_series, busy_series = generate_animation_frames(
                 segments=segs,
@@ -998,12 +974,14 @@ def main():
                 anim_seconds=anim_seconds,
                 dt=dt,
             )
-            # Serialise frame and series data for JavaScript
+            # Convert frames to a serialisable structure: list of lists of [x, y]
             frames_list = [[list(pos) for pos in frame] for frame in frames]
+            # Convert queue/busy series to lists
             queue_json = {k: [float(x) for x in v] for k, v in queue_series.items()}
             busy_json = {k: [float(x) for x in v] for k, v in busy_series.items()}
 
-            # Normalised node positions for JS (same as used in simulate_customers)
+            # Node positions for JavaScript (normalised [0,10]x[0,4])
+            # These must correspond to the positions used in simulate_customers
             node_coords = {
                 'door':      (50, 250),
                 'kiosk':     (250, 120),
@@ -1022,22 +1000,29 @@ def main():
                 return ((x - min_x) / (max_x - min_x) * 10.0,
                         (y - min_y) / (max_y - min_y) * 4.0)
             node_js = {name: norm_js(*pos) for name, pos in node_coords.items()}
-            # Capacities for busy counters
+
+            # Prepare capacities for busy counters
             busy_caps = {
                 'registers': caps.get('registers', 1),
                 'cooks': caps.get('cooks', 1),
                 'expo': caps.get('expo', 1),
             }
-            # JSON strings
+
+            # Assemble HTML and JavaScript for animation
+            # Encode data as JSON
             frames_json = json.dumps(frames_list)
             queue_json_str = json.dumps(queue_json)
             busy_json_str = json.dumps(busy_json)
             node_json_str = json.dumps(node_js)
             busy_caps_str = json.dumps(busy_caps)
-            # Canvas size: enlarge for better visibility
-            canvas_width = 1100
-            canvas_height = 450
-            # Build JS and HTML
+
+            # Determine canvas size (scaled from normalised coordinates)
+            canvas_width = 800
+            canvas_height = 320
+            # JavaScript code for p5.js animation.  Use instance mode to avoid global pollution.
+            # Build the JavaScript and HTML code using str.format to avoid
+            # accidental f-string interpolation of braces.  We double the
+            # braces in the JavaScript templates to escape them for .format().
             js_template = """
             <script src="https://cdn.jsdelivr.net/npm/p5@1.4.2/lib/p5.min.js"></script>
             <div id="p5-container"></div>
@@ -1047,23 +1032,26 @@ def main():
             const busySeries = {busy_json};
             const nodePos = {node_json};
             const busyCaps = {busy_caps};
+            const dt = {dt_value};
             const fps = {fps_value};
             const canvasW = {canvas_w};
             const canvasH = {canvas_h};
-            // p5 variables
-            let frameIndex = 0;
-            let isPaused = false;
+
+            // Create the p5 sketch
             const sketch = (p) => {{
+              let frameIndex = 0;
               p.setup = () => {{
                 p.createCanvas(canvasW, canvasH);
                 p.frameRate(fps);
               }};
               p.draw = () => {{
                 p.background(255);
+                // Draw static nodes (scaled from normalised positions)
                 const rectW = 60;
                 const rectH = 40;
                 const scaleX = canvasW / 10.0;
                 const scaleY = canvasH / 4.0;
+                // Node labels and positions
                 const labels = {{
                   'door': 'Door',
                   'kiosk': 'Kiosk',
@@ -1086,9 +1074,10 @@ def main():
                   p.textSize(12);
                   p.text(labels[name], x, y);
                 }}
-                // Queue bars
-                const barScale = 10;
+                // Draw queue bars and counts
+                const barScale = 10; // pixels per person in queue
                 const barWidth = 8;
+                // Specific bar positions relative to stations
                 const barPositions = {{
                   'kiosks': nodePos['kiosk'],
                   'registers': nodePos['register'],
@@ -1110,7 +1099,7 @@ def main():
                   p.textAlign(p.CENTER, p.BOTTOM);
                   p.text('Q: ' + Math.floor(q), x, y - rectH/2 - h - 8);
                 }}
-                // Busy counters
+                // Draw busy counters at top
                 const br = busySeries['registers'][frameIndex] || 0;
                 const bc = busySeries['cooks'][frameIndex] || 0;
                 const be = busySeries['expo'][frameIndex] || 0;
@@ -1119,7 +1108,7 @@ def main():
                 p.textSize(12);
                 p.textAlign(p.LEFT, p.TOP);
                 p.text(txt, 10, 10);
-                // Customers
+                // Draw customers
                 const positions = frames[frameIndex] || [];
                 p.fill(0, 102, 204);
                 p.noStroke();
@@ -1128,33 +1117,15 @@ def main():
                   const y = pos[1] * scaleY;
                   p.ellipse(x, y, 10, 10);
                 }}
-                if (!isPaused) {{
-                  frameIndex++;
-                  if (frameIndex >= frames.length) {{
-                    frameIndex = frames.length - 1;
-                    isPaused = true;
-                  }}
+                // Advance frame
+                frameIndex++;
+                if (frameIndex >= frames.length) {{
+                  frameIndex = frames.length - 1; // stop at last frame
                 }}
               }};
             }};
+            // Create a new p5 instance
             new p5(sketch, document.getElementById('p5-container'));
-            </script>
-            <div style="margin-top:10px;">
-              <button id="pauseBtn">Pause</button>
-              <button id="skipBtn">Skip</button>
-            </div>
-            <script>
-            const pauseBtn = document.getElementById('pauseBtn');
-            const skipBtn = document.getElementById('skipBtn');
-            pauseBtn.addEventListener('click', () => {{
-              isPaused = !isPaused;
-              pauseBtn.innerText = isPaused ? 'Resume' : 'Pause';
-            }});
-            skipBtn.addEventListener('click', () => {{
-              frameIndex = frames.length - 1;
-              isPaused = true;
-              pauseBtn.innerText = 'Resume';
-            }});
             </script>
             """
             js_code = js_template.format(
@@ -1163,43 +1134,19 @@ def main():
                 busy_json=busy_json_str,
                 node_json=node_json_str,
                 busy_caps=busy_caps_str,
+                dt_value=dt,
                 fps_value=fps,
                 canvas_w=canvas_width,
                 canvas_h=canvas_height,
             )
-        # After simulation and frame generation, render results and animation in tabs
-        with tab_animation:
-            if skip_animation:
-                st.warning(
-                    "Animation skipped. Please open the 'Summary Results' tab to view metrics."
-                )
-            else:
-                # Static skip button to bypass animation during display
-                if st.button("Skip animation", key="skip_static"):
-                    st.session_state['skip_animation'] = True
-                    st.warning(
-                        "Animation skipped. Please open the 'Summary Results' tab to view metrics."
-                    )
-                # Display the animation HTML only if not skipped via session state
-                if not st.session_state.get('skip_animation', False):
-                    st.components.v1.html(js_code, height=canvas_height + 30, width=canvas_width)
-                else:
-                    st.write("Animation has been skipped.")
-        # Summary tab: always show summary after simulation
-        with tab_summary:
+            # Render the dynamic content
             st.subheader("Summary Results")
             c1, c2, c3 = st.columns(3)
-            c1.metric(
-                "Customers served", results["served"]
-            )
-            c2.metric(
-                "Avg time in system (min)",
-                f"{results['avg_time_min']:.2f}" if results['served'] > 0 else "NA"
-            )
-            c3.metric(
-                "90th percentile time (min)",
-                f"{results['p90_time_min']:.2f}" if results['served'] >= 10 else "NA"
-            )
+            c1.metric("Customers served", results["served"])
+            c2.metric("Avg time in system (min)", f"{results['avg_time_min']:.2f}" if results['served'] > 0 else "NA")
+            c3.metric("90th percentile time (min)", f"{results['p90_time_min']:.2f}" if results['served'] >= 10 else "NA")
+
+            # Display utilisation bar chart
             util_data = pd.DataFrame({
                 'Resource': [
                     'Kiosk', 'Register', 'Cook', 'Expo', 'Drink', 'Condiment', 'Tables'
@@ -1216,6 +1163,8 @@ def main():
             })
             st.subheader("Resource Utilisation")
             st.bar_chart(util_data.set_index('Resource'))
+
+            # Display average queue lengths bar chart
             qlen_data = pd.DataFrame({
                 'Resource': [
                     'Kiosk', 'Register', 'Cook', 'Expo', 'Drink', 'Condiment', 'Tables'
@@ -1232,10 +1181,11 @@ def main():
             })
             st.subheader("Average Queue Lengths")
             st.bar_chart(qlen_data.set_index('Resource'))
-    # If run_button not pressed, show a placeholder in summary tab
-    if not run_button:
-        with tab_summary:
-            st.info("Run the simulation to see summary results.")
+
+            # Display the animation
+            st.subheader(f"Animation (first {anim_minutes} minutes)")
+            # Use components.html to embed the p5.js animation
+            st.components.v1.html(js_code, height=canvas_height + 20, width=canvas_width)
 
 
 if __name__ == "__main__":
