@@ -1463,7 +1463,8 @@ def main():
                 'condiment_station': load_icon('condiment_station.jpg'),
                 'door': load_icon('door.jpg'),
                 'table': load_icon('table.jpg'),
-                'customer': load_icon('customer.png'),
+                # Use customer2.png for the customer icon.  We ignore customer.png.
+                'customer': load_icon('customer2.png'),
             }
             # Serialise the icon data for JavaScript.  We convert the keys to
             # JSON so they can be referenced directly in the JS code.  Note
@@ -1540,6 +1541,9 @@ def main():
                 // width unadjusted ensures that stations on the far left and
                 // right are visible and not cut off.
                 p.createCanvas(p.windowWidth, canvasH);
+                // Disable smoothing in p5.js to keep images sharp.  See p5.js
+                // documentation for noSmooth(): https://p5js.org/reference/#/p5/noSmooth
+                p.noSmooth();
                 // Disable image smoothing on the underlying 2D context so that
                 // scaled icons remain crisp.  Without this, the icons will
                 // appear blurry when drawn at a smaller size.  See MDN
@@ -1562,14 +1566,13 @@ def main():
                 // the form "resource_index" (e.g. "kiosks_0").  We derive
                 // the resource prefix to look up the correct icon.  If an
                 // icon is missing for a given prefix, nothing will be drawn.
-                // Define icon sizes.  Increase the size slightly so that
-                // station icons appear larger and clearer on the canvas.
-                const iconW = 60;
-                const iconH = 50;
-                // Define customer icon size.  This determines the size of
-                // customers shown walking through the restaurant.
-                const customerW = 16;
-                const customerH = 16;
+                // Define station icon height (fixed).  The width will be computed
+                // dynamically from the inherent aspect ratio of the image to avoid
+                // distortion.  A larger height makes icons clearer.
+                const stationIconH = 100;
+                // Define customer icon height (fixed).  Customer width will be computed
+                // from the inherent aspect ratio of the customer image.
+                const customerIconH = 80;
                 for (const key in nodePositions) {{
                   const pos = nodePositions[key];
                   const x = pos[0] * scaleX;
@@ -1581,6 +1584,10 @@ def main():
                   }}
                   const iconImg = icons[prefix] || null;
                   if (iconImg) {{
+                    // Compute the display width using the original aspect ratio.
+                    const ratio = iconImg.width / iconImg.height;
+                    const iconW = ratio * stationIconH;
+                    const iconH = stationIconH;
                     // Draw the icon centred horizontally and slightly above
                     // the y position so that the label can fit below.
                     p.image(iconImg, x - iconW/2, y - iconH/2 - 5, iconW, iconH);
@@ -1591,13 +1598,15 @@ def main():
                     p.stroke(180);
                     p.rect(x - rectW/2, y - rectH/2, rectW, rectH, 5);
                   }}
-                  // Draw the label below the icon/rectangle
+                  // Draw the label below the icon/rectangle.  The vertical
+                  // offset uses the station icon height so that text always
+                  // appears below the image regardless of its aspect ratio.
                   p.noStroke();
                   p.fill(50);
                   p.textSize(10);
                   p.textAlign(p.CENTER, p.TOP);
                   const label = nodeLabels[key] || key;
-                  p.text(label, x, y + iconH/2 + 2);
+                  p.text(label, x, y + stationIconH/2 + 2);
                 }}
                 // Draw queue squares to the left of the first station in each group
                 const queueSpacing = 0.15;
@@ -1640,18 +1649,22 @@ def main():
                 // Draw customers (moving dots)
                 const positions = frames[frameIndex] || [];
                 for (const pos of positions) {{
-                  const cx = pos[0] * scaleX;
-                  const cy = pos[1] * scaleY;
-                  const custImg = icons['customer'];
-                  if (custImg) {{
-                    // Draw the customer icon centred at the position
-                    p.image(custImg, cx - customerW / 2, cy - customerH / 2, customerW, customerH);
-                  }} else {{
-                    // Fallback: draw a blue circle if no image
-                    p.fill(0, 102, 204);
-                    p.noStroke();
-                    p.ellipse(cx, cy, 10, 10);
-                  }}
+                    const cx = pos[0] * scaleX;
+                    const cy = pos[1] * scaleY;
+                    const custImg = icons['customer'];
+                    if (custImg) {{
+                        // Compute customer display width using aspect ratio.
+                        const ratio = custImg.width / custImg.height;
+                        const customerW = ratio * customerIconH;
+                        const customerH = customerIconH;
+                        // Draw the customer icon centred at the position
+                        p.image(custImg, cx - customerW / 2, cy - customerH / 2, customerW, customerH);
+                    }} else {{
+                        // Fallback: draw a blue circle if no image
+                        p.fill(0, 102, 204);
+                        p.noStroke();
+                        p.ellipse(cx, cy, 10, 10);
+                    }}
                 }}
                 if (!isPaused) {{
                   frameIndex++;
