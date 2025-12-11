@@ -1494,7 +1494,10 @@ def main():
             // resource type.  Exit uses the same image as door and will be
             // mapped accordingly in preload.
             const imgData = {icon_data};
-            const icons = {};
+            // Initialise icons dictionary. Use double braces to avoid Python
+            // str.format interpreting this as a formatting placeholder. These
+            // braces will render as a single pair in the final JavaScript.
+            const icons = {{}};
             const fps = {fps_value};
             const canvasH = {canvas_h};
             let frameIndex = 0;
