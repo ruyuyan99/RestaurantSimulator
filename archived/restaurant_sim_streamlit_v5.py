@@ -1400,65 +1400,7 @@ def main():
                 'cooks': caps.get('cooks', 1),
                 'expo': caps.get('expo', 1),
             }
-            # ------------------------------------------------------------------
-            # Load JPEG icons and prepare data URIs for each resource type.  We
-            # embed these as base64 strings so they can be loaded by p5.js in
-            # the browser without separate file requests.  The icons reside in
-            # the current working directory (uploaded by the user).  We map
-            # plural resource keys to singular filenames for clarity.
-            import base64, os
-            def load_icon(name: str) -> str:
-                """Load an icon image from the assets folder or local directory and return a data URI.
-
-                Icons are stored in the `assets` subdirectory relative to this
-                script.  If the file is not found there, we fall back to
-                loading from the current directory.  The image is encoded
-                as a base64 data URI so that it can be embedded directly
-                into the HTML/JS without separate file requests.
-
-                Parameters
-                ----------
-                name : str
-                    Filename of the icon (e.g. ``'kiosk.jpg'``).
-
-                Returns
-                -------
-                str
-                    A data URI string representing the loaded image.
-                """
-                # Determine the directory of this script
-                script_dir = os.path.dirname(__file__)
-                # Path to the assets directory
-                asset_dir = os.path.join(script_dir, 'assets')
-                # Try to load from assets directory first
-                candidate_paths = [
-                    os.path.join(asset_dir, name),
-                    os.path.join(script_dir, name),
-                ]
-                for path in candidate_paths:
-                    if os.path.isfile(path):
-                        with open(path, 'rb') as f:
-                            data = base64.b64encode(f.read()).decode('utf-8')
-                        return f"data:image/jpeg;base64,{data}"
-                # If the file is not found, return an empty data URI to avoid errors
-                return ''
-
-            icon_data = {
-                'kiosk': load_icon('kiosk.jpg'),
-                'register': load_icon('register.jpg'),
-                'chef': load_icon('chef.jpg'),
-                'expo': load_icon('expo.jpg'),
-                'drink_station': load_icon('drink_station.jpg'),
-                'condiment_station': load_icon('condiment_station.jpg'),
-                'door': load_icon('door.jpg'),
-                'table': load_icon('table.jpg'),
-            }
-            # Serialise the icon data for JavaScript.  We convert the keys to
-            # JSON so they can be referenced directly in the JS code.  Note
-            # that exit shares the door icon; this is handled in the JS.
-            icon_data_str = json.dumps(icon_data)
-
-            # Prepare JSON strings for frames, queues, busies and node info
+            # Prepare JSON strings
             frames_json = json.dumps(frames_list)
             queue_json_str = json.dumps(queue_json)
             busy_json_str = json.dumps(busy_json)
@@ -1490,30 +1432,11 @@ def main():
             const nodeColors = {node_colors};
             const nodeLabels = {node_labels};
             const busyCaps = {busy_caps};
-            // Icon data URIs encoded in base64.  Each key corresponds to a
-            // resource type.  Exit uses the same image as door and will be
-            // mapped accordingly in preload.
-            const imgData = {icon_data};
-            const icons = {};
             const fps = {fps_value};
             const canvasH = {canvas_h};
             let frameIndex = 0;
             let isPaused = false;
             const sketch = (p) => {{
-              p.preload = () => {{
-                // Load icons from the provided data URIs.  We map plural
-                // resource prefixes to singular icon keys.  Exit shares the
-                // door icon.  If a key is missing, no icon will be drawn.
-                icons['kiosks'] = p.loadImage(imgData.kiosk);
-                icons['registers'] = p.loadImage(imgData.register);
-                icons['cooks'] = p.loadImage(imgData.chef);
-                icons['expo'] = p.loadImage(imgData.expo);
-                icons['drinks'] = p.loadImage(imgData.drink_station);
-                icons['condiments'] = p.loadImage(imgData.condiment_station);
-                icons['tables'] = p.loadImage(imgData.table);
-                icons['door'] = p.loadImage(imgData.door);
-                icons['exit'] = icons['door'];
-              }};
               p.setup = () => {{
                 // Create a canvas that spans the full available width.  We no
                 // longer subtract a fixed margin because Streamlit will
@@ -1532,40 +1455,20 @@ def main():
                 const scaleY = canvasH / 4.0;
                 const rectW = 50;
                 const rectH = 32;
-                // Draw stations with icons and labels.  Each node key is of
-                // the form "resource_index" (e.g. "kiosks_0").  We derive
-                // the resource prefix to look up the correct icon.  If an
-                // icon is missing for a given prefix, nothing will be drawn.
-                const iconW = 50;
-                const iconH = 40;
+                // Draw stations with colours and labels
                 for (const key in nodePositions) {{
                   const pos = nodePositions[key];
                   const x = pos[0] * scaleX;
                   const y = pos[1] * scaleY;
-                  // Determine resource prefix (e.g. "kiosks", "registers")
-                  let prefix = key;
-                  if (key.includes('_')) {{
-                    prefix = key.split('_')[0];
-                  }}
-                  const iconImg = icons[prefix] || null;
-                  if (iconImg) {{
-                    // Draw the icon centred horizontally and slightly above
-                    // the y position so that the label can fit below.
-                    p.image(iconImg, x - iconW/2, y - iconH/2 - 5, iconW, iconH);
-                  }} else {{
-                    // Fallback: draw a pastel rectangle if no icon
-                    const fillCol = nodeColors[key] || '#cccccc';
-                    p.fill(p.color(fillCol));
-                    p.stroke(180);
-                    p.rect(x - rectW/2, y - rectH/2, rectW, rectH, 5);
-                  }}
-                  // Draw the label below the icon/rectangle
+                  const fillCol = nodeColors[key] || '#cccccc';
+                  p.fill(p.color(fillCol));
+                  p.stroke(180);
+                  p.rect(x - rectW/2, y - rectH/2, rectW, rectH, 5);
                   p.noStroke();
                   p.fill(50);
                   p.textSize(10);
-                  p.textAlign(p.CENTER, p.TOP);
-                  const label = nodeLabels[key] || key;
-                  p.text(label, x, y + iconH/2 + 2);
+                  p.textAlign(p.CENTER, p.CENTER);
+                  p.text(nodeLabels[key] || key, x, y);
                 }}
                 // Draw queue squares to the left of the first station in each group
                 const queueSpacing = 0.15;
@@ -1650,7 +1553,6 @@ def main():
                 busy_caps=busy_caps_str,
                 fps_value=fps,
                 canvas_h=canvas_height,
-                icon_data=icon_data_str,
             )
         # Store results in session state so they persist on interactions
         st.session_state['results'] = results
