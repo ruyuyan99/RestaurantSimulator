@@ -532,32 +532,45 @@ def simulate_customers(
                 station_coords[key] = []
             else:
                 base_pos = NODE_COORDS[base_node]
-                station_coords[key] = layout_positions(base_pos, count)
-        # If there is at least one expo server and at least one cook, shift cooks down
-        # slightly so they do not overlap with the expo row.  We add a vertical offset
-        # to all cook positions.  Without this shift, cooks and expo would be drawn
-        # at the same Y coordinate, causing overlap in the animation.  The offset
-        # matches the vertical spacing used in layout_positions (0.4 units).
-        # If there is at least one expo server and at least one cook, reposition
-        # the cook stations so they do not lie on the same horizontal band as
-        # the expo.  We assign the first three cook stations above the expo
-        # (shifting their y-coordinate up by the vertical spacing) and any
-        # additional cook stations below the expo (shifting down by the same
-        # amount).  This avoids overlap between cooks and expo and produces a
-        # balanced arrangement.  If there are fewer than three cooks, they
-        # will all be placed above the expo row.  The vertical offset of
-        # 0.4 matches the spacing used in ``layout_positions``.
-        if capacities.get('expo', 0) > 0 and capacities.get('cooks', 0) > 0:
-            cook_positions = station_coords.get('cooks', [])
-            new_positions: List[Tuple[float, float]] = []
-            for i, (cx, cy) in enumerate(cook_positions):
-                if i < 3:
-                    # Place the first three cooks above the expo row
-                    new_positions.append((cx, cy - 0.4))
+                # Determine station positions.  For expo, enforce a single
+                # horizontal row regardless of server count.  For cooks with
+                # expo servers, split cooks into a top band (first three) and
+                # one or more bottom bands, separated from the expo band by a
+                # fixed vertical offset.  Otherwise, fall back to a regular
+                # grid layout.
+                if key == 'expo':
+                    # Expo stations are always laid out on a single row.  We
+                    # compute horizontal offsets based on the number of expo
+                    # servers so they are evenly spaced about the base
+                    # position.  All expo stations share the same y‑coordinate.
+                    positions: List[Tuple[float, float]] = []
+                    for i in range(count):
+                        dx = (i - (count - 1) / 2.0) * 0.4
+                        positions.append((base_pos[0] + dx, base_pos[1]))
+                    station_coords[key] = positions
+                elif key == 'cooks' and capacities.get('expo', 0) > 0:
+                    # When expo servers exist, cooks must not occupy the same
+                    # horizontal band as the expo.  We use a grid of up to
+                    # three columns for cooks and assign the first three
+                    # cooks to a band above the expo and the remaining cooks
+                    # to bands below the expo.  Rows below the expo are
+                    # spaced at multiples of 0.4 (the vertical spacing
+                    # used in layout_positions) relative to the expo band.
+                    tmp_positions = layout_positions(base_pos, count, max_cols=3)
+                    positions: List[Tuple[float, float]] = []
+                    for i, (cx, cy_unused) in enumerate(tmp_positions):
+                        if i < 3:
+                            # Top band: shift cooks up by 0.4
+                            positions.append((cx, base_pos[1] - 0.4))
+                        else:
+                            # Bottom bands: shift cooks down by (row_index+1)*0.4
+                            idx_bottom = i - 3
+                            row_index = idx_bottom // 3
+                            positions.append((cx, base_pos[1] + (row_index + 1) * 0.4))
+                    station_coords[key] = positions
                 else:
-                    # Additional cooks go below the expo row
-                    new_positions.append((cx, cy + 0.4))
-            station_coords['cooks'] = new_positions
+                    # Default layout for other resources or when no expo exists
+                    station_coords[key] = layout_positions(base_pos, count)
 
     # Create resource states
     resources: Dict[str, ResourceState] = {
@@ -1341,23 +1354,36 @@ def main():
                 if count <= 0:
                     continue
                 base_pos = base_norm[base_key]
-                positions = layout_positions(base_pos, count)
+                # For expo, enforce a single horizontal band regardless of
+                # server count.  For cooks with expo servers present, split
+                # cooks into a top band (first three) and one or more
+                # bottom bands separated from the expo band.  Otherwise,
+                # positions are laid out in a regular grid.
+                positions: List[Tuple[float, float]]
+                if res_key == 'expo':
+                    positions = []
+                    for i in range(count):
+                        dx = (i - (count - 1) / 2.0) * 0.4
+                        positions.append((base_pos[0] + dx, base_pos[1]))
+                elif res_key == 'cooks' and caps.get('expo', 0) > 0:
+                    # Generate preliminary x positions using up to three
+                    # columns.  We ignore the y coordinate returned by
+                    # layout_positions and instead compute our own y offsets.
+                    tmp_positions = layout_positions(base_pos, count, max_cols=3)
+                    positions = []
+                    for i, (px_tmp, _py_tmp) in enumerate(tmp_positions):
+                        if i < 3:
+                            # Top band above expo
+                            positions.append((px_tmp, base_pos[1] - 0.4))
+                        else:
+                            idx_bottom = i - 3
+                            row_index = idx_bottom // 3
+                            positions.append((px_tmp, base_pos[1] + (row_index + 1) * 0.4))
+                else:
+                    positions = layout_positions(base_pos, count)
                 for idx, (px, py) in enumerate(positions):
                     node_key = f"{res_key}_{idx}"
-                    # For cooks, if expo servers exist, place the first three cooks above
-                    # the expo row and any additional cooks below.  We adjust the
-                    # y-coordinate accordingly.  This mirrors the logic used for
-                    # station_coords in the simulation, avoiding overlap with expo.
-                    if res_key == 'cooks' and caps.get('expo', 0) > 0:
-                        if idx < 3:
-                            # Shift up by 0.4 (vertical spacing)
-                            adj_py = py - 0.4
-                        else:
-                            # Shift down by 0.4
-                            adj_py = py + 0.4
-                        node_positions[node_key] = (px, adj_py)
-                    else:
-                        node_positions[node_key] = (px, py)
+                    node_positions[node_key] = (px, py)
                     # Create label with capitalised name and number
                     label_name = res_key[:-1].capitalize() if res_key.endswith('s') else res_key.capitalize()
                     node_labels[node_key] = f"{label_name} {idx+1}"
