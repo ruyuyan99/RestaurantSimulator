@@ -1524,6 +1524,13 @@ def main():
                 // width unadjusted ensures that stations on the far left and
                 // right are visible and not cut off.
                 p.createCanvas(p.windowWidth, canvasH);
+                // Disable image smoothing on the underlying 2D context so that
+                // scaled icons remain crisp.  Without this, the icons will
+                // appear blurry when drawn at a smaller size.  See MDN
+                // documentation for imageSmoothingEnabled: https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D/imageSmoothingEnabled
+                if (p.drawingContext && p.drawingContext.imageSmoothingEnabled !== undefined) {{
+                  p.drawingContext.imageSmoothingEnabled = false;
+                }}
                 p.frameRate(fps);
               }};
               p.windowResized = () => {{
