@@ -367,7 +367,7 @@ class ResourceState:
         self.busy_events: List[Tuple[float, int]] = []   # (time, +1 or -1) when server starts/ends service
 
 
-def schedule_service(res_state: ResourceState, arrival_time: float, mean_service: float) -> Tuple[float, float]:
+def schedule_service(res_state: ResourceState, arrival_time: float, mean_service: float) -> Tuple[int, float, float]:
     """Schedule a service at a resource and record queue/busy events.
 
     Parameters
@@ -381,11 +381,17 @@ def schedule_service(res_state: ResourceState, arrival_time: float, mean_service
 
     Returns
     -------
-    (start_service_time, end_service_time)
+    (server_index, start_service_time, end_service_time)
+        server_index : int
+            Index of the server (0‑based) assigned to this customer.
+        start_service_time : float
+            Time when service begins.
+        end_service_time : float
+            Time when service finishes.
     """
     if res_state.capacity <= 0:
         # No capacity at this resource; service happens immediately with zero duration
-        return arrival_time, arrival_time
+        return (0, arrival_time, arrival_time)
 
     # Find the earliest available server
     idx = int(np.argmin(res_state.free_times))
@@ -409,7 +415,7 @@ def schedule_service(res_state: ResourceState, arrival_time: float, mean_service
     res_state.busy_events.append((end_service, -1))
     # Update the server's next free time
     res_state.free_times[idx] = end_service
-    return start_service, end_service
+    return (idx, start_service, end_service)
 
 
 def simulate_customers(
@@ -418,6 +424,7 @@ def simulate_customers(
     capacities: Dict[str, int],
     pct_to_kiosk: float,
     animation_seconds: float,
+    station_coords: Dict[str, List[Tuple[float, float]]] = None,
 ) -> Tuple[List[List[Dict[str, float]]], Dict[str, np.ndarray], Dict[str, np.ndarray]]:
     """Run a custom DES to generate movement segments and queue/busy time series for animation.
 
@@ -469,14 +476,63 @@ def simulate_customers(
         SEATING:   (1050, 260),
         EXIT:      (1250, 260),
     }
+    # Normalise base positions into a rectangular canvas with generous margins.
+    # We compress the x‑range into [0.8, 9.2] (instead of [0.5, 9.5]) and the y‑range
+    # into [0.5, 3.5].  This leaves extra horizontal margin so station
+    # rectangles (50 px wide) do not get cut off at the edges when the
+    # animation is drawn.  These values mirror those used in the JS
+    # normalisation helper.
     xs = [p[0] for p in raw_pos.values()]
     ys = [p[1] for p in raw_pos.values()]
     min_x, max_x = min(xs), max(xs)
     min_y, max_y = min(ys), max(ys)
     def norm(x: float, y: float) -> Tuple[float, float]:
-        return ((x - min_x) / (max_x - min_x) * 10.0,
-                (y - min_y) / (max_y - min_y) * 4.0)
+        # compress to 8.4 units (9.2-0.8) horizontally with 0.8 margin on left and right
+        x_norm = (x - min_x) / (max_x - min_x) * 8.4 + 0.8
+        # compress y into [0.5,3.5]
+        y_norm = (y - min_y) / (max_y - min_y) * 3.0 + 0.5
+        return (x_norm, y_norm)
     NODE_COORDS = {node: norm(*pos) for node, pos in raw_pos.items()}
+
+    # If station_coords is not provided, we derive per‑server positions
+    # using the base NODE_COORDS for each resource group.  When provided,
+    # station_coords overrides NODE_COORDS for assigning positions during
+    # waiting and service segments.  station_coords maps resource keys
+    # (e.g. 'kiosks') to a list of (x, y) tuples, one per server.  These
+    # coordinates should be normalised to the same scale as NODE_COORDS.
+    if station_coords is None:
+        station_coords = {}
+        import math
+        def layout_positions(base: Tuple[float, float], n: int, max_cols: int = 3, spacing_x: float = 0.4, spacing_y: float = 0.4) -> List[Tuple[float, float]]:
+            if n <= 0:
+                return []
+            cols = min(n, max_cols)
+            rows = int(math.ceil(n / cols))
+            positions = []
+            for i in range(n):
+                row = i // cols
+                col = i % cols
+                dx = (col - (cols - 1) / 2.0) * spacing_x
+                dy = (row - (rows - 1) / 2.0) * spacing_y
+                positions.append((base[0] + dx, base[1] + dy))
+            return positions
+        # Map resource keys to their base node keys for deriving base positions
+        resource_base = {
+            'kiosks':     KIOSK,
+            'registers':  REGISTER,
+            'cooks':      PICKUP,
+            'expo':       PICKUP,
+            'drinks':     DRINK,
+            'condiments': CONDIMENT,
+            'tables':     SEATING,
+        }
+        for key, base_node in resource_base.items():
+            count = capacities.get(key, 0)
+            if count <= 0:
+                station_coords[key] = []
+            else:
+                base_pos = NODE_COORDS[base_node]
+                station_coords[key] = layout_positions(base_pos, count)
 
     # Create resource states
     resources: Dict[str, ResourceState] = {
@@ -531,32 +587,72 @@ def simulate_customers(
 
         # Service at kiosk/register
         if to_kiosk:
-            start_svc, end_svc = schedule_service(resources['kiosks'], current_time, MEAN_ORDER_TIME)
+            svc_mean = MEAN_ORDER_TIME
+            server_idx, start_svc, end_svc = schedule_service(resources['kiosks'], current_time, svc_mean)
+            # Wait segment if the customer arrives before service can start
+            if start_svc > current_time:
+                # Use per‑station coordinates if available, otherwise fall back to base
+                if station_coords.get('kiosks'):
+                    px, py = station_coords['kiosks'][server_idx]
+                else:
+                    px, py = NODE_COORDS[current_node]
+                customer_segments.append({
+                    'start_time': current_time,
+                    'end_time': start_svc,
+                    'x0': px,
+                    'y0': py,
+                    'x1': px,
+                    'y1': py,
+                    'wait': True,
+                })
+            # Service segment
+            if end_svc > start_svc:
+                if station_coords.get('kiosks'):
+                    px, py = station_coords['kiosks'][server_idx]
+                else:
+                    px, py = NODE_COORDS[current_node]
+                customer_segments.append({
+                    'start_time': start_svc,
+                    'end_time': end_svc,
+                    'x0': px,
+                    'y0': py,
+                    'x1': px,
+                    'y1': py,
+                    'wait': True,
+                })
+            current_time = end_svc
         else:
-            start_svc, end_svc = schedule_service(resources['registers'], current_time, MEAN_REGISTER_TIME)
-        # Wait segment if any
-        if start_svc > current_time:
-            customer_segments.append({
-                'start_time': current_time,
-                'end_time': start_svc,
-                'x0': NODE_COORDS[current_node][0],
-                'y0': NODE_COORDS[current_node][1],
-                'x1': NODE_COORDS[current_node][0],
-                'y1': NODE_COORDS[current_node][1],
-                'wait': True,
-            })
-        # Service segment
-        if end_svc > start_svc:
-            customer_segments.append({
-                'start_time': start_svc,
-                'end_time': end_svc,
-                'x0': NODE_COORDS[current_node][0],
-                'y0': NODE_COORDS[current_node][1],
-                'x1': NODE_COORDS[current_node][0],
-                'y1': NODE_COORDS[current_node][1],
-                'wait': True,
-            })
-        current_time = end_svc
+            svc_mean = MEAN_REGISTER_TIME
+            server_idx, start_svc, end_svc = schedule_service(resources['registers'], current_time, svc_mean)
+            if start_svc > current_time:
+                if station_coords.get('registers'):
+                    px, py = station_coords['registers'][server_idx]
+                else:
+                    px, py = NODE_COORDS[current_node]
+                customer_segments.append({
+                    'start_time': current_time,
+                    'end_time': start_svc,
+                    'x0': px,
+                    'y0': py,
+                    'x1': px,
+                    'y1': py,
+                    'wait': True,
+                })
+            if end_svc > start_svc:
+                if station_coords.get('registers'):
+                    px, py = station_coords['registers'][server_idx]
+                else:
+                    px, py = NODE_COORDS[current_node]
+                customer_segments.append({
+                    'start_time': start_svc,
+                    'end_time': end_svc,
+                    'x0': px,
+                    'y0': py,
+                    'x1': px,
+                    'y1': py,
+                    'wait': True,
+                })
+            current_time = end_svc
 
         # Walk to pickup
         walk_dur = walk_time(current_node, PICKUP)
@@ -572,50 +668,68 @@ def simulate_customers(
         current_time += walk_dur
         current_node = PICKUP
 
-        # Service at cook
-        start_svc, end_svc = schedule_service(resources['cooks'], current_time, MEAN_COOK_TIME)
+        # Service at cook (use per‑server positions if defined)
+        srv_idx, start_svc, end_svc = schedule_service(resources['cooks'], current_time, MEAN_COOK_TIME)
+        # Wait segment before cook
         if start_svc > current_time:
+            if station_coords.get('cooks'):
+                px, py = station_coords['cooks'][srv_idx]
+            else:
+                px, py = NODE_COORDS[current_node]
             customer_segments.append({
                 'start_time': current_time,
                 'end_time': start_svc,
-                'x0': NODE_COORDS[current_node][0],
-                'y0': NODE_COORDS[current_node][1],
-                'x1': NODE_COORDS[current_node][0],
-                'y1': NODE_COORDS[current_node][1],
+                'x0': px,
+                'y0': py,
+                'x1': px,
+                'y1': py,
                 'wait': True,
             })
+        # Service segment at cook
         if end_svc > start_svc:
+            if station_coords.get('cooks'):
+                px, py = station_coords['cooks'][srv_idx]
+            else:
+                px, py = NODE_COORDS[current_node]
             customer_segments.append({
                 'start_time': start_svc,
                 'end_time': end_svc,
-                'x0': NODE_COORDS[current_node][0],
-                'y0': NODE_COORDS[current_node][1],
-                'x1': NODE_COORDS[current_node][0],
-                'y1': NODE_COORDS[current_node][1],
+                'x0': px,
+                'y0': py,
+                'x1': px,
+                'y1': py,
                 'wait': True,
             })
         current_time = end_svc
 
         # Service at expo
-        start_svc, end_svc = schedule_service(resources['expo'], current_time, MEAN_EXPO_TIME)
+        srv_idx, start_svc, end_svc = schedule_service(resources['expo'], current_time, MEAN_EXPO_TIME)
         if start_svc > current_time:
+            if station_coords.get('expo'):
+                px, py = station_coords['expo'][srv_idx]
+            else:
+                px, py = NODE_COORDS[current_node]
             customer_segments.append({
                 'start_time': current_time,
                 'end_time': start_svc,
-                'x0': NODE_COORDS[current_node][0],
-                'y0': NODE_COORDS[current_node][1],
-                'x1': NODE_COORDS[current_node][0],
-                'y1': NODE_COORDS[current_node][1],
+                'x0': px,
+                'y0': py,
+                'x1': px,
+                'y1': py,
                 'wait': True,
             })
         if end_svc > start_svc:
+            if station_coords.get('expo'):
+                px, py = station_coords['expo'][srv_idx]
+            else:
+                px, py = NODE_COORDS[current_node]
             customer_segments.append({
                 'start_time': start_svc,
                 'end_time': end_svc,
-                'x0': NODE_COORDS[current_node][0],
-                'y0': NODE_COORDS[current_node][1],
-                'x1': NODE_COORDS[current_node][0],
-                'y1': NODE_COORDS[current_node][1],
+                'x0': px,
+                'y0': py,
+                'x1': px,
+                'y1': py,
                 'wait': True,
             })
         current_time = end_svc
@@ -635,25 +749,33 @@ def simulate_customers(
         current_node = DRINK
 
         # Service at drinks
-        start_svc, end_svc = schedule_service(resources['drinks'], current_time, MEAN_DRINK_TIME)
+        srv_idx, start_svc, end_svc = schedule_service(resources['drinks'], current_time, MEAN_DRINK_TIME)
         if start_svc > current_time:
+            if station_coords.get('drinks'):
+                px, py = station_coords['drinks'][srv_idx]
+            else:
+                px, py = NODE_COORDS[current_node]
             customer_segments.append({
                 'start_time': current_time,
                 'end_time': start_svc,
-                'x0': NODE_COORDS[current_node][0],
-                'y0': NODE_COORDS[current_node][1],
-                'x1': NODE_COORDS[current_node][0],
-                'y1': NODE_COORDS[current_node][1],
+                'x0': px,
+                'y0': py,
+                'x1': px,
+                'y1': py,
                 'wait': True,
             })
         if end_svc > start_svc:
+            if station_coords.get('drinks'):
+                px, py = station_coords['drinks'][srv_idx]
+            else:
+                px, py = NODE_COORDS[current_node]
             customer_segments.append({
                 'start_time': start_svc,
                 'end_time': end_svc,
-                'x0': NODE_COORDS[current_node][0],
-                'y0': NODE_COORDS[current_node][1],
-                'x1': NODE_COORDS[current_node][0],
-                'y1': NODE_COORDS[current_node][1],
+                'x0': px,
+                'y0': py,
+                'x1': px,
+                'y1': py,
                 'wait': True,
             })
         current_time = end_svc
@@ -673,25 +795,33 @@ def simulate_customers(
         current_node = CONDIMENT
 
         # Service at condiments
-        start_svc, end_svc = schedule_service(resources['condiments'], current_time, MEAN_CONDIMENT_TIME)
+        srv_idx, start_svc, end_svc = schedule_service(resources['condiments'], current_time, MEAN_CONDIMENT_TIME)
         if start_svc > current_time:
+            if station_coords.get('condiments'):
+                px, py = station_coords['condiments'][srv_idx]
+            else:
+                px, py = NODE_COORDS[current_node]
             customer_segments.append({
                 'start_time': current_time,
                 'end_time': start_svc,
-                'x0': NODE_COORDS[current_node][0],
-                'y0': NODE_COORDS[current_node][1],
-                'x1': NODE_COORDS[current_node][0],
-                'y1': NODE_COORDS[current_node][1],
+                'x0': px,
+                'y0': py,
+                'x1': px,
+                'y1': py,
                 'wait': True,
             })
         if end_svc > start_svc:
+            if station_coords.get('condiments'):
+                px, py = station_coords['condiments'][srv_idx]
+            else:
+                px, py = NODE_COORDS[current_node]
             customer_segments.append({
                 'start_time': start_svc,
                 'end_time': end_svc,
-                'x0': NODE_COORDS[current_node][0],
-                'y0': NODE_COORDS[current_node][1],
-                'x1': NODE_COORDS[current_node][0],
-                'y1': NODE_COORDS[current_node][1],
+                'x0': px,
+                'y0': py,
+                'x1': px,
+                'y1': py,
                 'wait': True,
             })
         current_time = end_svc
@@ -717,26 +847,35 @@ def simulate_customers(
             else MEAN_DINE_TIME_MIN
         )
         dine_t = 60.0 * expov(dine_mean_min)
-        start_svc, end_svc = schedule_service(resources['tables'], current_time, dine_t)
-        # Wait and dine segments
+        srv_idx, start_svc, end_svc = schedule_service(resources['tables'], current_time, dine_t)
+        # Wait segment before dining
         if start_svc > current_time:
+            if station_coords.get('tables'):
+                px, py = station_coords['tables'][srv_idx]
+            else:
+                px, py = NODE_COORDS[current_node]
             customer_segments.append({
                 'start_time': current_time,
                 'end_time': start_svc,
-                'x0': NODE_COORDS[current_node][0],
-                'y0': NODE_COORDS[current_node][1],
-                'x1': NODE_COORDS[current_node][0],
-                'y1': NODE_COORDS[current_node][1],
+                'x0': px,
+                'y0': py,
+                'x1': px,
+                'y1': py,
                 'wait': True,
             })
+        # Dining segment
         if end_svc > start_svc:
+            if station_coords.get('tables'):
+                px, py = station_coords['tables'][srv_idx]
+            else:
+                px, py = NODE_COORDS[current_node]
             customer_segments.append({
                 'start_time': start_svc,
                 'end_time': end_svc,
-                'x0': NODE_COORDS[current_node][0],
-                'y0': NODE_COORDS[current_node][1],
-                'x1': NODE_COORDS[current_node][0],
-                'y1': NODE_COORDS[current_node][1],
+                'x0': px,
+                'y0': py,
+                'x1': px,
+                'y1': py,
                 'wait': True,
             })
         current_time = end_svc
@@ -1005,8 +1144,17 @@ def main():
             queue_json = {k: [float(x) for x in v] for k, v in queue_series.items()}
             busy_json = {k: [float(x) for x in v] for k, v in busy_series.items()}
 
-            # Normalised node positions for JS (same as used in simulate_customers)
-            node_coords = {
+            # ------------------------------------------------------------------
+            # Compute dynamic node positions for each station group.  We normalise
+            # the original node positions to [0,10]x[0,4] and then create grid
+            # layouts for resources with multiple stations (e.g. kiosks, registers,
+            # cooks, expo, drinks, condiments, tables).  Each station is given a
+            # unique key like 'kiosks_0', 'kiosks_1', etc.  Additional metadata
+            # such as pastel colours and labels are also prepared and passed to
+            # the JavaScript renderer.
+
+            # Normalised base positions (same scaling used in simulate_customers)
+            base_coords = {
                 'door':      (50, 250),
                 'kiosk':     (250, 120),
                 'register':  (250, 380),
@@ -1016,33 +1164,117 @@ def main():
                 'seating':   (1050, 260),
                 'exit':      (1250, 260),
             }
-            xs = [p[0] for p in node_coords.values()]
-            ys = [p[1] for p in node_coords.values()]
+            xs = [p[0] for p in base_coords.values()]
+            ys = [p[1] for p in base_coords.values()]
             min_x, max_x = min(xs), max(xs)
             min_y, max_y = min(ys), max(ys)
+            # Normalisation helper for JavaScript node positions.  To avoid
+            # stations being cut off at the extreme left and right edges of
+            # the canvas, we compress the x‑range from [0, 10] to [0.5, 9.5].
+            # Similarly, compress the y‑range slightly so nodes are not flush
+            # against the top or bottom.  This adds a margin around the
+            # layout, ensuring that labels and buttons do not get cut off.
             def norm_js(x: float, y: float) -> Tuple[float, float]:
-                return ((x - min_x) / (max_x - min_x) * 10.0,
-                        (y - min_y) / (max_y - min_y) * 4.0)
-            node_js = {name: norm_js(*pos) for name, pos in node_coords.items()}
-            # Capacities for busy counters
+                """
+                Normalise raw node coordinates into the animation coordinate
+                system.  To ensure stations are not cut off at the edges, we
+                compress the x‑range into [0.8, 9.2] and the y‑range into
+                [0.5, 3.5].  These ranges match those used in the Python
+                simulation for station positions.  The extra horizontal
+                margin prevents station rectangles and labels from being
+                clipped when drawn in the canvas.
+                """
+                x_norm = (x - min_x) / (max_x - min_x) * 8.4 + 0.8
+                y_norm = (y - min_y) / (max_y - min_y) * 3.0 + 0.5
+                return (x_norm, y_norm)
+            base_norm = {name: norm_js(*pos) for name, pos in base_coords.items()}
+
+            import math
+            # Helper to lay out stations in a grid around a base position
+            def layout_positions(base: Tuple[float, float], n: int, max_cols: int = 3, spacing_x: float = 0.4, spacing_y: float = 0.4) -> List[Tuple[float, float]]:
+                if n <= 0:
+                    return []
+                cols = min(n, max_cols)
+                rows = int(math.ceil(n / cols))
+                positions = []
+                for i in range(n):
+                    row = i // cols
+                    col = i % cols
+                    dx = (col - (cols - 1) / 2.0) * spacing_x
+                    dy = (row - (rows - 1) / 2.0) * spacing_y
+                    positions.append((base[0] + dx, base[1] + dy))
+                return positions
+
+            # Map resource keys to their corresponding base node keys
+            resource_base = {
+                'kiosks': 'kiosk',
+                'registers': 'register',
+                'cooks': 'pickup',
+                'expo': 'pickup',
+                'drinks': 'drink',
+                'condiments': 'condiment',
+                'tables': 'seating',
+            }
+            # Pastel colour palette for each resource group (hex strings)
+            group_colours = {
+                'kiosks': '#cfe2f3',    # light blue
+                'registers': '#f4cccc', # light red
+                'cooks': '#fff2cc',     # light yellow
+                'expo': '#d9ead3',      # light green
+                'drinks': '#ead1dc',    # light pink
+                'condiments': '#d0e0e3',# light cyan
+                'tables': '#d9d2e9',    # light purple
+                'door': '#eeeeee',
+                'exit': '#eeeeee',
+            }
+            # Compute node positions and labels
+            node_positions: Dict[str, Tuple[float, float]] = {}
+            node_labels: Dict[str, str] = {}
+            node_colors: Dict[str, str] = {}
+            # Door and Exit have single positions
+            node_positions['door'] = base_norm['door']
+            node_labels['door'] = 'Door'
+            node_colors['door'] = group_colours['door']
+            node_positions['exit'] = base_norm['exit']
+            node_labels['exit'] = 'Exit'
+            node_colors['exit'] = group_colours['exit']
+            # Compute positions for each resource group with capacity > 0
+            for res_key, base_key in resource_base.items():
+                count = caps.get(res_key, 0)
+                if count <= 0:
+                    continue
+                base_pos = base_norm[base_key]
+                positions = layout_positions(base_pos, count)
+                for idx, (px, py) in enumerate(positions):
+                    node_key = f"{res_key}_{idx}"
+                    node_positions[node_key] = (px, py)
+                    # Create label with capitalised name and number
+                    label_name = res_key[:-1].capitalize() if res_key.endswith('s') else res_key.capitalize()
+                    node_labels[node_key] = f"{label_name} {idx+1}"
+                    node_colors[node_key] = group_colours.get(res_key, '#cccccc')
+
+            # Busy counters show only registers, cooks and expo
             busy_caps = {
                 'registers': caps.get('registers', 1),
                 'cooks': caps.get('cooks', 1),
                 'expo': caps.get('expo', 1),
             }
-            # JSON strings
+            # Prepare JSON strings
             frames_json = json.dumps(frames_list)
             queue_json_str = json.dumps(queue_json)
             busy_json_str = json.dumps(busy_json)
-            node_json_str = json.dumps(node_js)
+            node_positions_str = json.dumps(node_positions)
+            node_colors_str = json.dumps(node_colors)
+            node_labels_str = json.dumps(node_labels)
             busy_caps_str = json.dumps(busy_caps)
-            # Canvas size: further enlarge for better visibility.  A wider canvas helps ensure
-            # stations and buttons are not cut off on large screens.  Note that the
-            # width argument on st.components.html is omitted below to allow the
-            # component to expand to the full width of its container.  Only the
-            # height is specified here.
-            canvas_width = 1400
-            canvas_height = 550
+            # Canvas size: height only; width is determined by Streamlit container
+            # Increase the canvas height to provide more vertical space for
+            # stations and their labels.  A larger height helps ensure
+            # stations like the kiosk, register and exit are not cut off when
+            # displayed in the browser.
+            # Height of the p5.js canvas.  A taller canvas ensures that
+            # stations and queue bars fit comfortably in the vertical space.
+            canvas_height = 700
             # Build JS and HTML
             js_template = """
             <script src="https://cdn.jsdelivr.net/npm/p5@1.4.2/lib/p5.min.js"></script>
@@ -1051,88 +1283,91 @@ def main():
             const frames = {frames_json};
             const queueSeries = {queue_json};
             const busySeries = {busy_json};
-            const nodePos = {node_json};
+            const nodePositions = {node_positions};
+            const nodeColors = {node_colors};
+            const nodeLabels = {node_labels};
             const busyCaps = {busy_caps};
             const fps = {fps_value};
-            const canvasW = {canvas_w};
             const canvasH = {canvas_h};
-            // p5 variables
             let frameIndex = 0;
             let isPaused = false;
             const sketch = (p) => {{
               p.setup = () => {{
-                p.createCanvas(canvasW, canvasH);
+                // Create a canvas that spans the full available width.  We no
+                // longer subtract a fixed margin because Streamlit will
+                // automatically handle horizontal padding.  Leaving the
+                // width unadjusted ensures that stations on the far left and
+                // right are visible and not cut off.
+                p.createCanvas(p.windowWidth, canvasH);
                 p.frameRate(fps);
+              }};
+              p.windowResized = () => {{
+                p.resizeCanvas(p.windowWidth, canvasH);
               }};
               p.draw = () => {{
                 p.background(255);
-                const rectW = 60;
-                const rectH = 40;
-                const scaleX = canvasW / 10.0;
+                const scaleX = p.width / 10.0;
                 const scaleY = canvasH / 4.0;
-                const labels = {{
-                  'door': 'Door',
-                  'kiosk': 'Kiosk',
-                  'register': 'Register',
-                  'pickup': 'Pickup',
-                  'drink': 'Drink',
-                  'condiment': 'Condiment',
-                  'seating': 'Seating',
-                  'exit': 'Exit'
-                }};
-                for (const [name, pos] of Object.entries(nodePos)) {{
+                const rectW = 50;
+                const rectH = 32;
+                // Draw stations with colours and labels
+                for (const key in nodePositions) {{
+                  const pos = nodePositions[key];
                   const x = pos[0] * scaleX;
                   const y = pos[1] * scaleY;
-                  p.fill(230);
+                  const fillCol = nodeColors[key] || '#cccccc';
+                  p.fill(p.color(fillCol));
                   p.stroke(180);
                   p.rect(x - rectW/2, y - rectH/2, rectW, rectH, 5);
-                  p.fill(50);
                   p.noStroke();
-                  p.textAlign(p.CENTER, p.CENTER);
-                  p.textSize(12);
-                  p.text(labels[name], x, y);
-                }}
-                // Queue bars
-                const barScale = 10;
-                const barWidth = 8;
-                const barPositions = {{
-                  'kiosks': nodePos['kiosk'],
-                  'registers': nodePos['register'],
-                  'cooks': [nodePos['pickup'][0] - 0.3, nodePos['pickup'][1]],
-                  'expo': [nodePos['pickup'][0] + 0.3, nodePos['pickup'][1]],
-                  'drinks': nodePos['drink'],
-                  'condiments': nodePos['condiment'],
-                  'tables': nodePos['seating']
-                }};
-                for (const [key, pos] of Object.entries(barPositions)) {{
-                  const q = queueSeries[key][frameIndex] || 0;
-                  const x = pos[0] * scaleX;
-                  const y = pos[1] * scaleY;
-                  const h = q * barScale;
-                  p.fill(120);
-                  p.rect(x - barWidth/2, y - rectH/2 - h - 5, barWidth, h);
                   p.fill(50);
-                  p.textSize(8);
-                  p.textAlign(p.CENTER, p.BOTTOM);
-                  p.text('Q: ' + Math.floor(q), x, y - rectH/2 - h - 8);
+                  p.textSize(10);
+                  p.textAlign(p.CENTER, p.CENTER);
+                  p.text(nodeLabels[key] || key, x, y);
                 }}
-                // Busy counters
+                // Draw queue squares to the left of the first station in each group
+                const queueSpacing = 0.15;
+                const queueSize = 8;
+                for (const resKey in queueSeries) {{
+                  const qlen = queueSeries[resKey][frameIndex] || 0;
+                  if (qlen <= 0) continue;
+                  // find representative station key for this resource
+                  let repKey = null;
+                  for (const nk in nodePositions) {{
+                    if (nk.startsWith(resKey + '_')) {{
+                      repKey = nk;
+                      break;
+                    }}
+                  }}
+                  if (!repKey) continue;
+                  const basePos = nodePositions[repKey];
+                  const baseX = basePos[0] * scaleX;
+                  const baseY = basePos[1] * scaleY;
+                  for (let i = 0; i < qlen; i++) {{
+                    const offset = (i + 1) * queueSpacing * scaleX;
+                    const x = baseX - rectW/2 - offset - queueSize;
+                    p.fill(p.color(nodeColors[repKey] || '#bbbbbb'));
+                    p.noStroke();
+                    p.rect(x, baseY - queueSize / 2, queueSize, queueSize);
+                  }}
+                }}
+                // Draw busy counters (top left)
                 const br = busySeries['registers'][frameIndex] || 0;
                 const bc = busySeries['cooks'][frameIndex] || 0;
                 const be = busySeries['expo'][frameIndex] || 0;
-                const txt = 'Registers: ' + Math.floor(br) + '/' + busyCaps['registers'] + '   Cooks: ' + Math.floor(bc) + '/' + busyCaps['cooks'] + '   Expo: ' + Math.floor(be) + '/' + busyCaps['expo'];
+                const busyText = 'Registers: ' + Math.floor(br) + '/' + busyCaps['registers'] + '   Cooks: ' + Math.floor(bc) + '/' + busyCaps['cooks'] + '   Expo: ' + Math.floor(be) + '/' + busyCaps['expo'];
                 p.fill(50);
                 p.textSize(12);
                 p.textAlign(p.LEFT, p.TOP);
-                p.text(txt, 10, 10);
-                // Customers
+                p.text(busyText, 10, 10);
+                // Draw customers (moving dots)
                 const positions = frames[frameIndex] || [];
                 p.fill(0, 102, 204);
                 p.noStroke();
                 for (const pos of positions) {{
-                  const x = pos[0] * scaleX;
-                  const y = pos[1] * scaleY;
-                  p.ellipse(x, y, 10, 10);
+                  const cx = pos[0] * scaleX;
+                  const cy = pos[1] * scaleY;
+                  p.ellipse(cx, cy, 10, 10);
                 }}
                 if (!isPaused) {{
                   frameIndex++;
@@ -1167,10 +1402,11 @@ def main():
                 frames_json=frames_json,
                 queue_json=queue_json_str,
                 busy_json=busy_json_str,
-                node_json=node_json_str,
+                node_positions=node_positions_str,
+                node_colors=node_colors_str,
+                node_labels=node_labels_str,
                 busy_caps=busy_caps_str,
                 fps_value=fps,
-                canvas_w=canvas_width,
                 canvas_h=canvas_height,
             )
         # Store results in session state so they persist on interactions
