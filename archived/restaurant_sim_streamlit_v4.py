@@ -533,16 +533,6 @@ def simulate_customers(
             else:
                 base_pos = NODE_COORDS[base_node]
                 station_coords[key] = layout_positions(base_pos, count)
-        # If there is at least one expo server and at least one cook, shift cooks down
-        # slightly so they do not overlap with the expo row.  We add a vertical offset
-        # to all cook positions.  Without this shift, cooks and expo would be drawn
-        # at the same Y coordinate, causing overlap in the animation.  The offset
-        # matches the vertical spacing used in layout_positions (0.4 units).
-        if capacities.get('expo', 0) > 0 and capacities.get('cooks', 0) > 0:
-            cook_offset = 0.4
-            station_coords['cooks'] = [
-                (x, y + cook_offset) for (x, y) in station_coords.get('cooks', [])
-            ]
 
     # Create resource states
     resources: Dict[str, ResourceState] = {
@@ -1048,78 +1038,56 @@ def main():
     )
 
     # Sidebar controls
-    # Organise sidebar controls into expandable sections.  This avoids an overly long
-    # sidebar while still exposing all simulation parameters.
-    with st.sidebar.expander("Simulation parameters", expanded=True):
-        sim_hours = st.slider("Simulation duration (hours)", 1, 12, DEFAULT_SIM_HOURS)
-        arrival_rate = st.slider(
-            "Arrival rate (customers per minute)", 0.1, 5.0, DEFAULT_ARRIVAL_RATE, 0.1
-        )
-        pct_to_kiosk = st.slider(
-            "Fraction choosing kiosk", 0.0, 1.0, 0.75, 0.05
-        )
-        walking_speed = st.number_input(
-            "Walking speed (m/s)", min_value=0.1, max_value=5.0, value=WALK_SPEED_MPS, step=0.1,
-            help="Average walking speed of customers."
-        )
-        st.markdown("**Party size distribution (weights should sum to 1)**")
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            weight1 = st.number_input("Party of 1", min_value=0.0, max_value=1.0, value=PARTY_SIZE_WEIGHTS[0][1], step=0.05)
-        with col2:
-            weight2 = st.number_input("Party of 2", min_value=0.0, max_value=1.0, value=PARTY_SIZE_WEIGHTS[1][1], step=0.05)
-        with col3:
-            weight3 = st.number_input("Party of 3", min_value=0.0, max_value=1.0, value=PARTY_SIZE_WEIGHTS[2][1], step=0.05)
-        with col4:
-            weight4 = st.number_input("Party of 4", min_value=0.0, max_value=1.0, value=PARTY_SIZE_WEIGHTS[3][1], step=0.05)
-    with st.sidebar.expander("Resource capacities", expanded=True):
-        n_kiosks = st.number_input(
-            "Number of kiosks", min_value=0, max_value=20, value=6, step=1
-        )
-        n_registers = st.number_input(
-            "Number of registers", min_value=0, max_value=20, value=2, step=1
-        )
-        n_cooks = st.number_input(
-            "Number of cooks", min_value=0, max_value=20, value=5, step=1
-        )
-        n_expo = st.number_input(
-            "Number of expo staff", min_value=0, max_value=20, value=1, step=1
-        )
-        n_drinks = st.number_input(
-            "Number of drink stations", min_value=0, max_value=20, value=2, step=1
-        )
-        n_condiments = st.number_input(
-            "Number of condiment stations", min_value=0, max_value=20, value=2, step=1
-        )
-        table_cap = st.number_input(
-            "Total seats (sum over tables)", min_value=0, max_value=200,
-            value=sum({2: 18, 4: 10}.values()) * 2, step=2
-        )
-    with st.sidebar.expander("Service times (mean in seconds)", expanded=True):
-        mean_order_time = st.number_input("Order time at kiosk", min_value=1, max_value=600, value=MEAN_ORDER_TIME, step=1)
-        mean_register_time = st.number_input("Order time at register", min_value=1, max_value=600, value=MEAN_REGISTER_TIME, step=1)
-        mean_cook_time = st.number_input("Cook time", min_value=1, max_value=600, value=MEAN_COOK_TIME, step=1)
-        mean_expo_time = st.number_input("Expo time", min_value=1, max_value=600, value=MEAN_EXPO_TIME, step=1)
-        mean_drink_time = st.number_input("Drink station time", min_value=1, max_value=600, value=MEAN_DRINK_TIME, step=1)
-        mean_condiment_time = st.number_input("Condiment station time", min_value=1, max_value=600, value=MEAN_CONDIMENT_TIME, step=1)
-        st.markdown("**Dining times (mean minutes) by party size**")
-        dine1 = st.number_input("Party of 1", min_value=1.0, max_value=120.0, value=float(MEAN_DINE_TIME_MIN.get(1, 14)), step=1.0)
-        dine2 = st.number_input("Party of 2", min_value=1.0, max_value=120.0, value=float(MEAN_DINE_TIME_MIN.get(2, 20)), step=1.0)
-        dine3 = st.number_input("Party of 3", min_value=1.0, max_value=120.0, value=float(MEAN_DINE_TIME_MIN.get(3, 24)), step=1.0)
-        dine4 = st.number_input("Party of 4", min_value=1.0, max_value=120.0, value=float(MEAN_DINE_TIME_MIN.get(4, 28)), step=1.0)
-    with st.sidebar.expander("Animation controls", expanded=True):
-        skip_animation = st.checkbox(
-            "Skip animation",
-            value=False,
-            help="Check to bypass the animation and display only summary results."
-        )
-        fps = st.select_slider(
-            "Animation FPS", options=[5, 10, 15], value=10
-        )
-        sim_speedup = st.slider(
-            "Simulation speedup (minutes per second)", min_value=1, max_value=10, value=1, step=1,
-            help="Number of minutes of simulated time compressed into one second of animation."
-        )
+    st.sidebar.header("Simulation Parameters")
+    sim_hours = st.sidebar.slider("Simulation duration (hours)", 1, 12, DEFAULT_SIM_HOURS)
+    arrival_rate = st.sidebar.slider(
+        "Arrival rate (customers per minute)", 0.1, 5.0, DEFAULT_ARRIVAL_RATE, 0.1
+    )
+    pct_to_kiosk = st.sidebar.slider(
+        "Fraction choosing kiosk", 0.0, 1.0, 0.75, 0.05
+    )
+
+    st.sidebar.subheader("Resource capacities")
+    n_kiosks = st.sidebar.number_input(
+        "Number of kiosks", min_value=0, max_value=20, value=6, step=1
+    )
+    n_registers = st.sidebar.number_input(
+        "Number of registers", min_value=0, max_value=20, value=2, step=1
+    )
+    n_cooks = st.sidebar.number_input(
+        "Number of cooks", min_value=0, max_value=20, value=5, step=1
+    )
+    n_expo = st.sidebar.number_input(
+        "Number of expo staff", min_value=0, max_value=20, value=1, step=1
+    )
+    n_drinks = st.sidebar.number_input(
+        "Number of drink stations", min_value=0, max_value=20, value=2, step=1
+    )
+    n_condiments = st.sidebar.number_input(
+        "Number of condiment stations", min_value=0, max_value=20, value=2, step=1
+    )
+
+    st.sidebar.subheader("Seating")
+    table_cap = st.sidebar.number_input(
+        "Total seats (sum over tables)", min_value=0, max_value=200,
+        value=sum({2: 18, 4: 10}.values()) * 2, step=2
+    )
+
+    st.sidebar.subheader("Animation controls")
+    # Static skip option to bypass animation generation entirely
+    skip_animation = st.sidebar.checkbox(
+        "Skip animation",
+        value=False,
+        help="Check to bypass the animation and display only summary results."
+    )
+    fps = st.sidebar.select_slider(
+        "Animation FPS", options=[5, 10, 15], value=10
+    )
+    sim_speedup = st.sidebar.slider(
+        "Simulation speedup (minutes per second)", min_value=1, max_value=10, value=1, step=1,
+        help="Number of minutes of simulated time compressed into one second of animation."
+    )
+
     # Trigger to run simulation.  When pressed, results will be stored in session_state
     run_button = st.sidebar.button("Run Simulation and Animate")
 
@@ -1129,36 +1097,6 @@ def main():
     # When run_button is clicked, run the simulations and store results in session_state
     if run_button:
         with st.spinner("Running simulation and preparing data, please wait..."):
-            # ------------------------------------------------------------------
-            # Update global simulation parameters based on sidebar inputs.  These
-            # variables control walking speed, party size distribution and service
-            # times.  We normalise party size weights so that they sum to 1.
-            global WALK_SPEED_MPS, MEAN_ORDER_TIME, MEAN_REGISTER_TIME, MEAN_COOK_TIME
-            global MEAN_EXPO_TIME, MEAN_DRINK_TIME, MEAN_CONDIMENT_TIME, MEAN_DINE_TIME_MIN
-            global PARTY_SIZE_WEIGHTS
-            WALK_SPEED_MPS = float(walking_speed)
-            MEAN_ORDER_TIME = float(mean_order_time)
-            MEAN_REGISTER_TIME = float(mean_register_time)
-            MEAN_COOK_TIME = float(mean_cook_time)
-            MEAN_EXPO_TIME = float(mean_expo_time)
-            MEAN_DRINK_TIME = float(mean_drink_time)
-            MEAN_CONDIMENT_TIME = float(mean_condiment_time)
-            # Update dining times dictionary
-            MEAN_DINE_TIME_MIN = {
-                1: float(dine1),
-                2: float(dine2),
-                3: float(dine3),
-                4: float(dine4),
-            }
-            # Normalise party size weights; if the sum is zero, keep defaults
-            total_weight = weight1 + weight2 + weight3 + weight4
-            if total_weight > 0:
-                PARTY_SIZE_WEIGHTS = [
-                    (1, float(weight1) / total_weight),
-                    (2, float(weight2) / total_weight),
-                    (3, float(weight3) / total_weight),
-                    (4, float(weight4) / total_weight),
-                ]
             # Run simulation using salabim for summary metrics
             results = run_simulation(
                 sim_hours=sim_hours,
@@ -1315,17 +1253,6 @@ def main():
                     node_labels[node_key] = f"{label_name} {idx+1}"
                     node_colors[node_key] = group_colours.get(res_key, '#cccccc')
 
-            # After initial assignment, apply a vertical offset to all cook nodes
-            # when there is at least one expo server.  This avoids the cooks being
-            # drawn directly behind the expo on the same row.  The offset
-            # matches the vertical spacing used in layout_positions (0.4 units).
-            if caps.get('expo', 0) > 0 and caps.get('cooks', 0) > 0:
-                cook_offset = 0.4
-                for node_key in list(node_positions.keys()):
-                    if node_key.startswith('cooks_'):
-                        x, y = node_positions[node_key]
-                        node_positions[node_key] = (x, y + cook_offset)
-
             # Busy counters show only registers, cooks and expo
             busy_caps = {
                 'registers': caps.get('registers', 1),
@@ -1347,11 +1274,7 @@ def main():
             # displayed in the browser.
             # Height of the p5.js canvas.  A taller canvas ensures that
             # stations and queue bars fit comfortably in the vertical space.
-            # Height of the p5.js canvas.  Increase this to provide more
-            # vertical room so stations like kiosks, registers and exit are
-            # fully visible without being cut off.  A larger canvas height
-            # improves the visual spacing of stations and queues.
-            canvas_height = 800
+            canvas_height = 700
             # Build JS and HTML
             js_template = """
             <script src="https://cdn.jsdelivr.net/npm/p5@1.4.2/lib/p5.min.js"></script>
