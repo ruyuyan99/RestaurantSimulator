@@ -1036,6 +1036,15 @@ def main():
     users to bypass the animation entirely.  The summary tab presents
     throughput and performance metrics after the simulation completes.
     """
+    # Declare global variables up front so that assignments within this
+    # function modify the module‑level constants. The global statements
+    # must precede any use of these names within the function
+    # otherwise Python will treat them as local variables and raise
+    # a SyntaxError if they are referenced prior to the global declaration.
+    global WALK_SPEED_MPS, MEAN_ORDER_TIME, MEAN_REGISTER_TIME, MEAN_COOK_TIME
+    global MEAN_EXPO_TIME, MEAN_DRINK_TIME, MEAN_CONDIMENT_TIME, MEAN_DINE_TIME_MIN
+    global PARTY_SIZE_WEIGHTS
+
     st.set_page_config(page_title="Restaurant DES with p5.js Animation", layout="wide")
     st.title("🍽️ Restaurant Discrete Event Simulation with Interactive Animation")
     st.write(
@@ -1131,11 +1140,10 @@ def main():
         with st.spinner("Running simulation and preparing data, please wait..."):
             # ------------------------------------------------------------------
             # Update global simulation parameters based on sidebar inputs.  These
-            # variables control walking speed, party size distribution and service
-            # times.  We normalise party size weights so that they sum to 1.
-            global WALK_SPEED_MPS, MEAN_ORDER_TIME, MEAN_REGISTER_TIME, MEAN_COOK_TIME
-            global MEAN_EXPO_TIME, MEAN_DRINK_TIME, MEAN_CONDIMENT_TIME, MEAN_DINE_TIME_MIN
-            global PARTY_SIZE_WEIGHTS
+            # variables control walking speed, party size distribution and
+            # service times.  We normalise party size weights so that they
+            # sum to 1.  Note that the global declarations for these variables
+            # are at the top of ``main``.
             WALK_SPEED_MPS = float(walking_speed)
             MEAN_ORDER_TIME = float(mean_order_time)
             MEAN_REGISTER_TIME = float(mean_register_time)
