@@ -1439,10 +1439,21 @@ def main():
                     if os.path.isfile(path):
                         with open(path, 'rb') as f:
                             data = base64.b64encode(f.read()).decode('utf-8')
-                        return f"data:image/jpeg;base64,{data}"
+                        # Determine MIME type based on file extension
+                        ext = os.path.splitext(path)[1].lower()
+                        if ext == '.png':
+                            mime = 'image/png'
+                        else:
+                            mime = 'image/jpeg'
+                        return f"data:{mime};base64,{data}"
                 # If the file is not found, return an empty data URI to avoid errors
                 return ''
 
+            # Include all icons for each resource type.  In addition to the
+            # existing station icons, we add a customer icon (customer.png)
+            # which will replace the blue dot in the animation.  The
+            # load_icon helper detects file extensions and returns an
+            # appropriate MIME type (image/png vs image/jpeg).
             icon_data = {
                 'kiosk': load_icon('kiosk.jpg'),
                 'register': load_icon('register.jpg'),
@@ -1452,6 +1463,7 @@ def main():
                 'condiment_station': load_icon('condiment_station.jpg'),
                 'door': load_icon('door.jpg'),
                 'table': load_icon('table.jpg'),
+                'customer': load_icon('customer.png'),
             }
             # Serialise the icon data for JavaScript.  We convert the keys to
             # JSON so they can be referenced directly in the JS code.  Note
@@ -1516,6 +1528,10 @@ def main():
                 icons['tables'] = p.loadImage(imgData.table);
                 icons['door'] = p.loadImage(imgData.door);
                 icons['exit'] = icons['door'];
+                // Load customer icon separately.  If the customer icon is
+                // missing, no image will be drawn and a fallback will be
+                // used instead when rendering customers.
+                icons['customer'] = p.loadImage(imgData.customer);
               }};
               p.setup = () => {{
                 // Create a canvas that spans the full available width.  We no
@@ -1546,8 +1562,14 @@ def main():
                 // the form "resource_index" (e.g. "kiosks_0").  We derive
                 // the resource prefix to look up the correct icon.  If an
                 // icon is missing for a given prefix, nothing will be drawn.
-                const iconW = 50;
-                const iconH = 40;
+                // Define icon sizes.  Increase the size slightly so that
+                // station icons appear larger and clearer on the canvas.
+                const iconW = 60;
+                const iconH = 50;
+                // Define customer icon size.  This determines the size of
+                // customers shown walking through the restaurant.
+                const customerW = 16;
+                const customerH = 16;
                 for (const key in nodePositions) {{
                   const pos = nodePositions[key];
                   const x = pos[0] * scaleX;
@@ -1598,9 +1620,12 @@ def main():
                   for (let i = 0; i < qlen; i++) {{
                     const offset = (i + 1) * queueSpacing * scaleX;
                     const x = baseX - rectW/2 - offset - queueSize;
+                    // Draw the queue square with a black outline for better visibility.
                     p.fill(p.color(nodeColors[repKey] || '#bbbbbb'));
-                    p.noStroke();
+                    p.stroke(0);
+                    p.strokeWeight(1);
                     p.rect(x, baseY - queueSize / 2, queueSize, queueSize);
+                    p.noStroke();
                   }}
                 }}
                 // Draw busy counters (top left)
@@ -1614,12 +1639,19 @@ def main():
                 p.text(busyText, 10, 10);
                 // Draw customers (moving dots)
                 const positions = frames[frameIndex] || [];
-                p.fill(0, 102, 204);
-                p.noStroke();
                 for (const pos of positions) {{
                   const cx = pos[0] * scaleX;
                   const cy = pos[1] * scaleY;
-                  p.ellipse(cx, cy, 10, 10);
+                  const custImg = icons['customer'];
+                  if (custImg) {{
+                    // Draw the customer icon centred at the position
+                    p.image(custImg, cx - customerW / 2, cy - customerH / 2, customerW, customerH);
+                  }} else {{
+                    // Fallback: draw a blue circle if no image
+                    p.fill(0, 102, 204);
+                    p.noStroke();
+                    p.ellipse(cx, cy, 10, 10);
+                  }}
                 }}
                 if (!isPaused) {{
                   frameIndex++;
