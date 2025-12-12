@@ -1169,10 +1169,10 @@ def main():
         mean_drink_time = st.number_input("Drink station time", min_value=1, max_value=600, value=MEAN_DRINK_TIME, step=1)
         mean_condiment_time = st.number_input("Condiment station time", min_value=1, max_value=600, value=MEAN_CONDIMENT_TIME, step=1)
         st.markdown("**Dining times (mean minutes) by party size**")
-        dine1 = st.number_input("Party of 1", min_value=1.0, max_value=120.0, value=7, step=1.0)
-        dine2 = st.number_input("Party of 2", min_value=1.0, max_value=120.0, value=10, step=1.0)
-        dine3 = st.number_input("Party of 3", min_value=1.0, max_value=120.0, value=12, step=1.0)
-        dine4 = st.number_input("Party of 4", min_value=1.0, max_value=120.0, value=14, step=1.0)
+        dine1 = st.number_input("Party of 1", min_value=1, max_value=120, value=7, step=1)
+        dine2 = st.number_input("Party of 2", min_value=1, max_value=120, value=10, step=1)
+        dine3 = st.number_input("Party of 3", min_value=1, max_value=120, value=12, step=1)
+        dine4 = st.number_input("Party of 4", min_value=1, max_value=120, value=14, step=1)
     with st.sidebar.expander("Animation controls", expanded=True):
         skip_animation = st.checkbox(
             "Skip animation",
