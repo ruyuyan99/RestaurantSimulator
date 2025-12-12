@@ -33,7 +33,7 @@ and can scale to many customers without overloading the server.
 import json
 import random
 import statistics
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Any
 
 import numpy as np
 import pandas as pd
@@ -48,7 +48,7 @@ import salabim as sim
 DEFAULT_SIM_HOURS = 4
 
 # Default arrival rate (customers per minute)
-DEFAULT_ARRIVAL_RATE = 1.2
+DEFAULT_ARRIVAL_RATE = 1.0
 
 # Default party size distribution
 PARTY_SIZE_WEIGHTS: List[Tuple[int, float]] = [
@@ -59,7 +59,7 @@ PARTY_SIZE_WEIGHTS: List[Tuple[int, float]] = [
 ]
 
 # Walking speed (m/s)
-WALK_SPEED_MPS = 1.2
+WALK_SPEED_MPS = 1.0
 
 # Distances between nodes (m).  These are used to compute walking times.
 # Nodes: DOOR, KIOSK, REGISTER, PICKUP, DRINK, CONDIMENT, SEATING, EXIT
@@ -80,8 +80,8 @@ DOOR, KIOSK, REGISTER, PICKUP, DRINK, CONDIMENT, SEATING, EXIT = range(8)
 # Mean service times (seconds)
 MEAN_ORDER_TIME     = 55  # kiosk
 MEAN_REGISTER_TIME  = 65  # register
-MEAN_COOK_TIME      = 210
-MEAN_EXPO_TIME      = 20
+MEAN_COOK_TIME      = 250
+MEAN_EXPO_TIME      = 10
 MEAN_DRINK_TIME     = 12
 MEAN_CONDIMENT_TIME = 10
 MEAN_DINE_TIME_MIN  = {1: 14, 2: 20, 3: 24, 4: 28}  # dine time (minutes) by party size
@@ -463,6 +463,8 @@ def simulate_customers(
     busy_ts : Dict[str, numpy.ndarray]
         For each resource name, a 1‑D array of busy server counts
         sampled every second.
+    party_sizes : List[int]
+        A list of party sizes corresponding to each customer in ``segments``.
     """
     # Define node coordinates based on the earlier animation positions
     # and normalise them to [0, 10] x [0, 4] for plotting convenience.
@@ -532,7 +534,45 @@ def simulate_customers(
                 station_coords[key] = []
             else:
                 base_pos = NODE_COORDS[base_node]
-                station_coords[key] = layout_positions(base_pos, count)
+                # Determine station positions.  For expo, enforce a single
+                # horizontal row regardless of server count.  For cooks with
+                # expo servers, split cooks into a top band (first three) and
+                # one or more bottom bands, separated from the expo band by a
+                # fixed vertical offset.  Otherwise, fall back to a regular
+                # grid layout.
+                if key == 'expo':
+                    # Expo stations are always laid out on a single row.  We
+                    # compute horizontal offsets based on the number of expo
+                    # servers so they are evenly spaced about the base
+                    # position.  All expo stations share the same y‑coordinate.
+                    positions: List[Tuple[float, float]] = []
+                    for i in range(count):
+                        dx = (i - (count - 1) / 2.0) * 0.4
+                        positions.append((base_pos[0] + dx, base_pos[1]))
+                    station_coords[key] = positions
+                elif key == 'cooks' and capacities.get('expo', 0) > 0:
+                    # When expo servers exist, cooks must not occupy the same
+                    # horizontal band as the expo.  We use a grid of up to
+                    # three columns for cooks and assign the first three
+                    # cooks to a band above the expo and the remaining cooks
+                    # to bands below the expo.  Rows below the expo are
+                    # spaced at multiples of 0.4 (the vertical spacing
+                    # used in layout_positions) relative to the expo band.
+                    tmp_positions = layout_positions(base_pos, count, max_cols=3)
+                    positions: List[Tuple[float, float]] = []
+                    for i, (cx, cy_unused) in enumerate(tmp_positions):
+                        if i < 3:
+                            # Top band: shift cooks up by 0.4
+                            positions.append((cx, base_pos[1] - 0.4))
+                        else:
+                            # Bottom bands: shift cooks down by (row_index+1)*0.4
+                            idx_bottom = i - 3
+                            row_index = idx_bottom // 3
+                            positions.append((cx, base_pos[1] + (row_index + 1) * 0.4))
+                    station_coords[key] = positions
+                else:
+                    # Default layout for other resources or when no expo exists
+                    station_coords[key] = layout_positions(base_pos, count)
 
     # Create resource states
     resources: Dict[str, ResourceState] = {
@@ -556,6 +596,10 @@ def simulate_customers(
         arrival_times.append(t)
 
     segments: List[List[Dict[str, float]]] = []
+    # Track the party size for each customer.  We append the party size
+    # alongside the segments list so that the party size can be used later
+    # for display purposes (e.g. drawing the number on the customer icon).
+    party_sizes: List[int] = []
 
     for arrival_time in arrival_times:
         # Stop generating segments after the animation window
@@ -567,6 +611,8 @@ def simulate_customers(
 
         # Draw party size and decide kiosk vs register
         party = party_size()
+        # Record the party size for this customer
+        party_sizes.append(party)
         to_kiosk = (random.random() < pct_to_kiosk) and (capacities.get('kiosks', 0) > 0)
         first = KIOSK if to_kiosk else REGISTER
 
@@ -926,7 +972,7 @@ def simulate_customers(
             arr[i] = b
         busy_ts[key] = arr
 
-    return segments, queue_ts, busy_ts
+    return segments, queue_ts, busy_ts, party_sizes
 
 
 def generate_animation_frames(
@@ -936,7 +982,8 @@ def generate_animation_frames(
     capacities: Dict[str, int],
     anim_seconds: float,
     dt: float = 0.5,
-) -> Tuple[List[List[Tuple[float, float]]], Dict[str, List[float]], Dict[str, List[float]]]:
+    party_sizes: List[int] | None = None,
+) -> Tuple[List[List[Tuple[float, float, int]]], Dict[str, List[float]], Dict[str, List[float]]]:
     """Generate per-frame positions and queue/busy series at a specified time step.
 
     Parameters
@@ -969,19 +1016,24 @@ def generate_animation_frames(
     num_frames = int(anim_seconds / dt) + 1
     times = np.linspace(0.0, anim_seconds, num_frames)
 
-    # Prepare per-customer state to track which segment index applies at time t
-    customer_states = []
-    for cust_segments in segments:
+    # Prepare per-customer state to track which segment index applies at time t.
+    # If party_sizes is provided, include it in the state so we can annotate
+    # customers with their party size in the animation.
+    customer_states: List[Dict[str, Any]] = []
+    for idx, cust_segments in enumerate(segments):
         if cust_segments:
-            customer_states.append({'segments': cust_segments, 'index': 0})
+            state: Dict[str, Any] = {'segments': cust_segments, 'index': 0}
+            if party_sizes is not None and idx < len(party_sizes):
+                state['party'] = party_sizes[idx]
+            customer_states.append(state)
 
-    frames: List[List[Tuple[float, float]]] = []
+    frames: List[List[Tuple[float, float, int]]] = []
     # Queue and busy series lists
     queue_series: Dict[str, List[float]] = {key: [] for key in queue_ts.keys()}
     busy_series: Dict[str, List[float]] = {key: [] for key in busy_ts.keys()}
 
     for t in times:
-        positions: List[Tuple[float, float]] = []
+        positions: List[Tuple[float, float, int]] = []
         for state in customer_states:
             segs = state['segments']
             i = state['index']
@@ -992,13 +1044,16 @@ def generate_animation_frames(
             if i < len(segs) and segs[i]['start_time'] <= t < segs[i]['end_time']:
                 seg = segs[i]
                 if seg['wait'] or seg['end_time'] == seg['start_time']:
-                    positions.append((seg['x0'], seg['y0']))
+                    # Use the party size if available, otherwise default to 1.
+                    party = state.get('party', 1)
+                    positions.append((seg['x0'], seg['y0'], party))
                 else:
                     # Linear interpolation along the path
                     frac = (t - seg['start_time']) / (seg['end_time'] - seg['start_time']) if seg['end_time'] > seg['start_time'] else 0.0
                     x = seg['x0'] + frac * (seg['x1'] - seg['x0'])
                     y = seg['y0'] + frac * (seg['y1'] - seg['y0'])
-                    positions.append((x, y))
+                    party = state.get('party', 1)
+                    positions.append((x, y, party))
         frames.append(positions)
         # Append queue lengths (sampled at integer seconds)
         idx_sec = int(min(max(int(t), 0), len(queue_ts['kiosks']) - 1))
@@ -1026,6 +1081,15 @@ def main():
     users to bypass the animation entirely.  The summary tab presents
     throughput and performance metrics after the simulation completes.
     """
+    # Declare global variables up front so that assignments within this
+    # function modify the module‑level constants. The global statements
+    # must precede any use of these names within the function
+    # otherwise Python will treat them as local variables and raise
+    # a SyntaxError if they are referenced prior to the global declaration.
+    global WALK_SPEED_MPS, MEAN_ORDER_TIME, MEAN_REGISTER_TIME, MEAN_COOK_TIME
+    global MEAN_EXPO_TIME, MEAN_DRINK_TIME, MEAN_CONDIMENT_TIME, MEAN_DINE_TIME_MIN
+    global PARTY_SIZE_WEIGHTS
+
     st.set_page_config(page_title="Restaurant DES with p5.js Animation", layout="wide")
     st.title("🍽️ Restaurant Discrete Event Simulation with Interactive Animation")
     st.write(
@@ -1038,56 +1102,90 @@ def main():
     )
 
     # Sidebar controls
-    st.sidebar.header("Simulation Parameters")
-    sim_hours = st.sidebar.slider("Simulation duration (hours)", 1, 12, DEFAULT_SIM_HOURS)
-    arrival_rate = st.sidebar.slider(
-        "Arrival rate (customers per minute)", 0.1, 5.0, DEFAULT_ARRIVAL_RATE, 0.1
-    )
-    pct_to_kiosk = st.sidebar.slider(
-        "Fraction choosing kiosk", 0.0, 1.0, 0.75, 0.05
-    )
-
-    st.sidebar.subheader("Resource capacities")
-    n_kiosks = st.sidebar.number_input(
-        "Number of kiosks", min_value=0, max_value=20, value=6, step=1
-    )
-    n_registers = st.sidebar.number_input(
-        "Number of registers", min_value=0, max_value=20, value=2, step=1
-    )
-    n_cooks = st.sidebar.number_input(
-        "Number of cooks", min_value=0, max_value=20, value=5, step=1
-    )
-    n_expo = st.sidebar.number_input(
-        "Number of expo staff", min_value=0, max_value=20, value=1, step=1
-    )
-    n_drinks = st.sidebar.number_input(
-        "Number of drink stations", min_value=0, max_value=20, value=2, step=1
-    )
-    n_condiments = st.sidebar.number_input(
-        "Number of condiment stations", min_value=0, max_value=20, value=2, step=1
-    )
-
-    st.sidebar.subheader("Seating")
-    table_cap = st.sidebar.number_input(
-        "Total seats (sum over tables)", min_value=0, max_value=200,
-        value=sum({2: 18, 4: 10}.values()) * 2, step=2
-    )
-
-    st.sidebar.subheader("Animation controls")
-    # Static skip option to bypass animation generation entirely
-    skip_animation = st.sidebar.checkbox(
-        "Skip animation",
-        value=False,
-        help="Check to bypass the animation and display only summary results."
-    )
-    fps = st.sidebar.select_slider(
-        "Animation FPS", options=[5, 10, 15], value=10
-    )
-    sim_speedup = st.sidebar.slider(
-        "Simulation speedup (minutes per second)", min_value=1, max_value=10, value=1, step=1,
-        help="Number of minutes of simulated time compressed into one second of animation."
-    )
-
+    # Organise sidebar controls into expandable sections.  This avoids an overly long
+    # sidebar while still exposing all simulation parameters.
+    with st.sidebar.expander("Simulation parameters", expanded=True):
+        sim_hours = st.slider("Simulation duration (hours)", 1, 12, DEFAULT_SIM_HOURS)
+        arrival_rate = st.slider(
+            "Arrival rate (customers per minute)", 0.1, 5.0, DEFAULT_ARRIVAL_RATE, 0.1
+        )
+        pct_to_kiosk = st.slider(
+            "Fraction choosing kiosk", 0.0, 1.0, 0.75, 0.05
+        )
+        walking_speed = st.number_input(
+            "Walking speed (m/s)", min_value=0.1, max_value=5.0, value=WALK_SPEED_MPS, step=0.1,
+            help="Average walking speed of customers."
+        )
+        st.markdown("**Party size distribution (weights should sum to 1)**")
+        # Display party size weights on separate rows for improved readability.
+        weight1 = st.number_input(
+            "Party of 1", min_value=0.0, max_value=1.0,
+            value=PARTY_SIZE_WEIGHTS[0][1], step=0.05,
+            key="ps_weight1"
+        )
+        weight2 = st.number_input(
+            "Party of 2", min_value=0.0, max_value=1.0,
+            value=PARTY_SIZE_WEIGHTS[1][1], step=0.05,
+            key="ps_weight2"
+        )
+        weight3 = st.number_input(
+            "Party of 3", min_value=0.0, max_value=1.0,
+            value=PARTY_SIZE_WEIGHTS[2][1], step=0.05,
+            key="ps_weight3"
+        )
+        weight4 = st.number_input(
+            "Party of 4", min_value=0.0, max_value=1.0,
+            value=PARTY_SIZE_WEIGHTS[3][1], step=0.05,
+            key="ps_weight4"
+        )
+    with st.sidebar.expander("Resource capacities", expanded=True):
+        n_kiosks = st.number_input(
+            "Number of kiosks", min_value=0, max_value=20, value=2, step=1
+        )
+        n_registers = st.number_input(
+            "Number of registers", min_value=0, max_value=20, value=2, step=1
+        )
+        n_cooks = st.number_input(
+            "Number of cooks", min_value=0, max_value=20, value=4, step=1
+        )
+        n_expo = st.number_input(
+            "Number of expo staff", min_value=0, max_value=20, value=1, step=1
+        )
+        n_drinks = st.number_input(
+            "Number of drink stations", min_value=0, max_value=20, value=1, step=1
+        )
+        n_condiments = st.number_input(
+            "Number of condiment stations", min_value=0, max_value=20, value=1, step=1
+        )
+        table_cap = st.number_input(
+            "Total Tables", min_value=0, max_value=200,
+            value=40, step=2
+        )
+    with st.sidebar.expander("Service times (mean in seconds)", expanded=True):
+        mean_order_time = st.number_input("Order time at kiosk", min_value=1, max_value=600, value=MEAN_ORDER_TIME, step=1)
+        mean_register_time = st.number_input("Order time at register", min_value=1, max_value=600, value=MEAN_REGISTER_TIME, step=1)
+        mean_cook_time = st.number_input("Cook time", min_value=1, max_value=600, value=MEAN_COOK_TIME, step=1)
+        mean_expo_time = st.number_input("Expo time", min_value=1, max_value=600, value=MEAN_EXPO_TIME, step=1)
+        mean_drink_time = st.number_input("Drink station time", min_value=1, max_value=600, value=MEAN_DRINK_TIME, step=1)
+        mean_condiment_time = st.number_input("Condiment station time", min_value=1, max_value=600, value=MEAN_CONDIMENT_TIME, step=1)
+        st.markdown("**Dining times (mean minutes) by party size**")
+        dine1 = st.number_input("Party of 1", min_value=1, max_value=120, value=7, step=1)
+        dine2 = st.number_input("Party of 2", min_value=1, max_value=120, value=10, step=1)
+        dine3 = st.number_input("Party of 3", min_value=1, max_value=120, value=12, step=1)
+        dine4 = st.number_input("Party of 4", min_value=1, max_value=120, value=14, step=1)
+    with st.sidebar.expander("Animation controls", expanded=True):
+        skip_animation = st.checkbox(
+            "Skip animation",
+            value=False,
+            help="Check to bypass the animation and display only summary results."
+        )
+        fps = st.select_slider(
+            "Animation FPS", options=[5, 10, 15, 20], value=15
+        )
+        sim_speedup = st.slider(
+            "Simulation speedup (minutes per second)", min_value=1, max_value=10, value=1, step=1,
+            help="Number of minutes of simulated time compressed into one second of animation."
+        )
     # Trigger to run simulation.  When pressed, results will be stored in session_state
     run_button = st.sidebar.button("Run Simulation and Animate")
 
@@ -1097,6 +1195,35 @@ def main():
     # When run_button is clicked, run the simulations and store results in session_state
     if run_button:
         with st.spinner("Running simulation and preparing data, please wait..."):
+            # ------------------------------------------------------------------
+            # Update global simulation parameters based on sidebar inputs.  These
+            # variables control walking speed, party size distribution and
+            # service times.  We normalise party size weights so that they
+            # sum to 1.  Note that the global declarations for these variables
+            # are at the top of ``main``.
+            WALK_SPEED_MPS = float(walking_speed)
+            MEAN_ORDER_TIME = float(mean_order_time)
+            MEAN_REGISTER_TIME = float(mean_register_time)
+            MEAN_COOK_TIME = float(mean_cook_time)
+            MEAN_EXPO_TIME = float(mean_expo_time)
+            MEAN_DRINK_TIME = float(mean_drink_time)
+            MEAN_CONDIMENT_TIME = float(mean_condiment_time)
+            # Update dining times dictionary
+            MEAN_DINE_TIME_MIN = {
+                1: float(dine1),
+                2: float(dine2),
+                3: float(dine3),
+                4: float(dine4),
+            }
+            # Normalise party size weights; if the sum is zero, keep defaults
+            total_weight = weight1 + weight2 + weight3 + weight4
+            if total_weight > 0:
+                PARTY_SIZE_WEIGHTS = [
+                    (1, float(weight1) / total_weight),
+                    (2, float(weight2) / total_weight),
+                    (3, float(weight3) / total_weight),
+                    (4, float(weight4) / total_weight),
+                ]
             # Run simulation using salabim for summary metrics
             results = run_simulation(
                 sim_hours=sim_hours,
@@ -1122,7 +1249,7 @@ def main():
             }
             anim_seconds = sim_hours * 3600.0
             # Run custom simulation to obtain segments and queue/busy time series
-            segs, qts, bts = simulate_customers(
+            segs, qts, bts, party_sizes = simulate_customers(
                 sim_hours=sim_hours,
                 arrival_rate=arrival_rate,
                 capacities=caps,
@@ -1138,6 +1265,7 @@ def main():
                 capacities=caps,
                 anim_seconds=anim_seconds,
                 dt=dt,
+                party_sizes=party_sizes,
             )
             # Serialise frame and series data for JavaScript
             frames_list = [[list(pos) for pos in frame] for frame in frames]
@@ -1244,7 +1372,33 @@ def main():
                 if count <= 0:
                     continue
                 base_pos = base_norm[base_key]
-                positions = layout_positions(base_pos, count)
+                # For expo, enforce a single horizontal band regardless of
+                # server count.  For cooks with expo servers present, split
+                # cooks into a top band (first three) and one or more
+                # bottom bands separated from the expo band.  Otherwise,
+                # positions are laid out in a regular grid.
+                positions: List[Tuple[float, float]]
+                if res_key == 'expo':
+                    positions = []
+                    for i in range(count):
+                        dx = (i - (count - 1) / 2.0) * 0.4
+                        positions.append((base_pos[0] + dx, base_pos[1]))
+                elif res_key == 'cooks' and caps.get('expo', 0) > 0:
+                    # Generate preliminary x positions using up to three
+                    # columns.  We ignore the y coordinate returned by
+                    # layout_positions and instead compute our own y offsets.
+                    tmp_positions = layout_positions(base_pos, count, max_cols=3)
+                    positions = []
+                    for i, (px_tmp, _py_tmp) in enumerate(tmp_positions):
+                        if i < 3:
+                            # Top band above expo
+                            positions.append((px_tmp, base_pos[1] - 0.4))
+                        else:
+                            idx_bottom = i - 3
+                            row_index = idx_bottom // 3
+                            positions.append((px_tmp, base_pos[1] + (row_index + 1) * 0.4))
+                else:
+                    positions = layout_positions(base_pos, count)
                 for idx, (px, py) in enumerate(positions):
                     node_key = f"{res_key}_{idx}"
                     node_positions[node_key] = (px, py)
@@ -1253,13 +1407,92 @@ def main():
                     node_labels[node_key] = f"{label_name} {idx+1}"
                     node_colors[node_key] = group_colours.get(res_key, '#cccccc')
 
+            # No additional cook offset is applied here.  Cook stations are
+            # repositioned within the loop above when expo servers exist.  This
+            # ensures that cooks are placed on rows above or below the expo
+            # band without further adjustment.
+
             # Busy counters show only registers, cooks and expo
             busy_caps = {
                 'registers': caps.get('registers', 1),
                 'cooks': caps.get('cooks', 1),
                 'expo': caps.get('expo', 1),
             }
-            # Prepare JSON strings
+            # ------------------------------------------------------------------
+            # Load PNG icons and prepare data URIs for each resource type.  We
+            # embed these as base64 strings so they can be loaded by p5.js in
+            # the browser without separate file requests.  The icons reside in
+            # the ``assets`` folder relative to this script (JPEG versions have
+            # been moved to an ``assets/jpegs`` subfolder and are ignored).  We map
+            # plural resource keys to singular filenames for clarity.
+            import base64, os
+            def load_icon(name: str) -> str:
+                """Load an icon image from the assets folder or local directory and return a data URI.
+
+                Icons are stored in the `assets` subdirectory relative to this
+                script.  If the file is not found there, we fall back to
+                loading from the current directory.  The image is encoded
+                as a base64 data URI so that it can be embedded directly
+                into the HTML/JS without separate file requests.
+
+                Parameters
+                ----------
+                name : str
+                    Filename of the icon (e.g. ``'kiosk.jpg'``).
+
+                Returns
+                -------
+                str
+                    A data URI string representing the loaded image.
+                """
+                # Determine the directory of this script
+                script_dir = os.path.dirname(__file__)
+                # Path to the assets directory
+                asset_dir = os.path.join(script_dir, 'assets')
+                # Try to load from assets directory first
+                candidate_paths = [
+                    os.path.join(asset_dir, name),
+                    os.path.join(script_dir, name),
+                ]
+                for path in candidate_paths:
+                    if os.path.isfile(path):
+                        with open(path, 'rb') as f:
+                            data = base64.b64encode(f.read()).decode('utf-8')
+                        # Determine MIME type based on file extension
+                        ext = os.path.splitext(path)[1].lower()
+                        if ext == '.png':
+                            mime = 'image/png'
+                        else:
+                            mime = 'image/jpeg'
+                        return f"data:{mime};base64,{data}"
+                # If the file is not found, return an empty data URI to avoid errors
+                return ''
+
+            # Include all icons for each resource type.  In addition to the
+            # existing station icons, we add a customer icon (customer.png)
+            # which will replace the blue dot in the animation.  The
+            # load_icon helper detects file extensions and returns an
+            # appropriate MIME type (image/png vs image/jpeg).
+            icon_data = {
+                # Use only PNG versions of the icons.  JPEG files are located
+                # in ``assets/jpegs`` and are deliberately ignored.
+                'kiosk': load_icon('kiosk.png'),
+                'register': load_icon('register.png'),
+                'chef': load_icon('chef.png'),
+                'expo': load_icon('expo.png'),
+                'drink_station': load_icon('drink_station.png'),
+                'condiment_station': load_icon('condiment_station.png'),
+                'door': load_icon('door.png'),
+                'table': load_icon('table.png'),
+                # Use customer2.png for the customer icon.  We ignore customer.png.
+                'customer': load_icon('customer2.png'),
+            }
+            # Serialise the icon data for JavaScript.  We convert the keys to
+            # JSON so they can be referenced directly in the JS code.  Note
+            # that exit shares the door icon; this is handled in the JS.
+            icon_data_str = json.dumps(icon_data)
+
+            # Prepare JSON strings for frames, queues, busies and node info
             frames_json = json.dumps(frames_list)
             queue_json_str = json.dumps(queue_json)
             busy_json_str = json.dumps(busy_json)
@@ -1274,7 +1507,11 @@ def main():
             # displayed in the browser.
             # Height of the p5.js canvas.  A taller canvas ensures that
             # stations and queue bars fit comfortably in the vertical space.
-            canvas_height = 700
+            # Height of the p5.js canvas.  Increase this to provide more
+            # vertical room so stations like kiosks, registers and exit are
+            # fully visible without being cut off.  A larger canvas height
+            # improves the visual spacing of stations and queues.
+            canvas_height = 800
             # Build JS and HTML
             js_template = """
             <script src="https://cdn.jsdelivr.net/npm/p5@1.4.2/lib/p5.min.js"></script>
@@ -1287,11 +1524,37 @@ def main():
             const nodeColors = {node_colors};
             const nodeLabels = {node_labels};
             const busyCaps = {busy_caps};
+            // Icon data URIs encoded in base64.  Each key corresponds to a
+            // resource type.  Exit uses the same image as door and will be
+            // mapped accordingly in preload.
+            const imgData = {icon_data};
+            // Initialise icons dictionary. Use double braces to avoid Python
+            // str.format interpreting this as a formatting placeholder. These
+            // braces will render as a single pair in the final JavaScript.
+            const icons = {{}};
             const fps = {fps_value};
             const canvasH = {canvas_h};
             let frameIndex = 0;
             let isPaused = false;
             const sketch = (p) => {{
+              p.preload = () => {{
+                // Load icons from the provided data URIs.  We map plural
+                // resource prefixes to singular icon keys.  Exit shares the
+                // door icon.  If a key is missing, no icon will be drawn.
+                icons['kiosks'] = p.loadImage(imgData.kiosk);
+                icons['registers'] = p.loadImage(imgData.register);
+                icons['cooks'] = p.loadImage(imgData.chef);
+                icons['expo'] = p.loadImage(imgData.expo);
+                icons['drinks'] = p.loadImage(imgData.drink_station);
+                icons['condiments'] = p.loadImage(imgData.condiment_station);
+                icons['tables'] = p.loadImage(imgData.table);
+                icons['door'] = p.loadImage(imgData.door);
+                icons['exit'] = icons['door'];
+                // Load customer icon separately.  If the customer icon is
+                // missing, no image will be drawn and a fallback will be
+                // used instead when rendering customers.
+                icons['customer'] = p.loadImage(imgData.customer);
+              }};
               p.setup = () => {{
                 // Create a canvas that spans the full available width.  We no
                 // longer subtract a fixed margin because Streamlit will
@@ -1299,6 +1562,16 @@ def main():
                 // width unadjusted ensures that stations on the far left and
                 // right are visible and not cut off.
                 p.createCanvas(p.windowWidth, canvasH);
+                // Disable smoothing in p5.js to keep images sharp.  See p5.js
+                // documentation for noSmooth(): https://p5js.org/reference/#/p5/noSmooth
+                p.noSmooth();
+                // Disable image smoothing on the underlying 2D context so that
+                // scaled icons remain crisp.  Without this, the icons will
+                // appear blurry when drawn at a smaller size.  See MDN
+                // documentation for imageSmoothingEnabled: https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D/imageSmoothingEnabled
+                if (p.drawingContext && p.drawingContext.imageSmoothingEnabled !== undefined) {{
+                  p.drawingContext.imageSmoothingEnabled = false;
+                }}
                 p.frameRate(fps);
               }};
               p.windowResized = () => {{
@@ -1310,20 +1583,134 @@ def main():
                 const scaleY = canvasH / 4.0;
                 const rectW = 50;
                 const rectH = 32;
-                // Draw stations with colours and labels
+                // Draw stations with icons and labels.  Each node key is of
+                // the form "resource_index" (e.g. "kiosks_0").  We derive
+                // the resource prefix to look up the correct icon.  If an
+                // icon is missing for a given prefix, nothing will be drawn.
+                // Define bounding box dimensions for station icons.  Each station
+                // icon will be scaled to fit within this box while maintaining
+                // its original aspect ratio.  Using a fixed bounding height and
+                // width ensures that all station icons occupy the same visual
+                // footprint regardless of their original size.
+                // Bounding box for station icons.  The height and width control
+                // the maximum size of each icon.  The icons will be
+                // scaled down or up to fit within this box while
+                // preserving their aspect ratio.  These values can be
+                // adjusted to control the apparent size of all station
+                // icons.  We shrink them slightly to compensate for
+                // cropped images that contain less whitespace.
+                // Shrink the bounding boxes for station icons now that the
+                // underlying images have been cropped and contain less
+                // whitespace.  A smaller bounding box (60×60) keeps the
+                // effective size of each icon similar to before cropping.
+                // After cropping whitespace from the icons, they appear
+                // relatively larger.  Reduce the bounding box for each
+                // station icon so that the final drawn size remains
+                // visually balanced.  Using 50×50 instead of 60×60
+                // compensates for the tighter crop while still keeping
+                // the icons legible.
+                // Shrink the bounding boxes further for station icons.  Now that
+                // the underlying assets have been tightly cropped, the
+                // previous 50×50 bounding box allows the icons to dominate
+                // the scene.  Reduce the dimensions to 45×45 so that
+                // stations maintain a consistent footprint across different
+                // asset sizes.  Icons will be scaled up or down to fit
+                // within this box while preserving their aspect ratio.
+                const stationBoundW = 45;
+                const stationBoundH = 45;
+                // Define bounding box dimensions for customer icons.  Each
+                // customer icon will be scaled to fit within this box while
+                // maintaining its aspect ratio.  This keeps customer icons
+                // consistent in size relative to other elements.
+                // Bounding box for customer icons.  Customers are drawn
+                // smaller than stations.  These values can be tweaked to
+                // adjust the size of the customer icons.  We set them
+                // slightly smaller now that icons have been cropped.
+                // Customer icons also appear larger after cropping.  Reduce
+                // their bounding box to 45×45 so that the characters do
+                // not dominate the layout.  The width and height values
+                // below define the maximum size of the customer icon.  The
+                // actual drawn size is computed from the original aspect
+                // ratio and will not exceed these bounds.
+                // Similarly shrink the bounding box for customer icons.
+                // Cropped customer icons contain less padding, so we
+                // reduce their maximum size to 35×35 (from 45×45) to
+                // maintain the visual hierarchy between stations and
+                // customers.  The actual rendered size is determined
+                // from this bounding box and the image's aspect ratio.
+                // Customer icons are also cropped more tightly now.  To keep
+                // them visually subordinate to station icons, reduce
+                // the bounding box to 30×30.  The icon will be scaled to
+                // fit within this box, ensuring customers remain smaller
+                // than stations even after cropping.
+                const customerBoundW = 30;
+                const customerBoundH = 30;
                 for (const key in nodePositions) {{
                   const pos = nodePositions[key];
                   const x = pos[0] * scaleX;
                   const y = pos[1] * scaleY;
-                  const fillCol = nodeColors[key] || '#cccccc';
-                  p.fill(p.color(fillCol));
-                  p.stroke(180);
-                  p.rect(x - rectW/2, y - rectH/2, rectW, rectH, 5);
+                  // Determine resource prefix (e.g. "kiosks", "registers")
+                  let prefix = key;
+                  if (key.includes('_')) {{
+                    prefix = key.split('_')[0];
+                  }}
+                  const iconImg = icons[prefix] || null;
+                  if (iconImg) {{
+                    // Scale the icon to fit within the station bounding box while
+                    // preserving its original aspect ratio.  We only shrink
+                    // images that exceed the bounding box; smaller images are
+                    // drawn at their natural size to maintain crispness.
+                    const origW = iconImg.width;
+                    const origH = iconImg.height;
+                    // Compute scale factor based solely on the bounding box.  We
+                    // deliberately do not clamp to 1 here because we want
+                    // smaller icons to be scaled up to fill the available
+                    // bounding box.  Combined with noSmooth() this
+                    // eliminates blurriness for icons with lower native
+                    // resolution.  See discussion in the code comments for
+                    // details.
+                    const scale = Math.min(stationBoundW / origW, stationBoundH / origH);
+                    const iconW = origW * scale;
+                    const iconH = origH * scale;
+                    // Draw the icon centred horizontally and slightly above
+                    // the y position so that the label can fit below.
+                    p.image(iconImg, x - iconW / 2, y - iconH / 2 - 5, iconW, iconH);
+                    // Draw the label closer to the bounding box.  Use the
+                    // actual icon height rather than the bounding height to
+                    // position the text more closely beneath the image.
+                    p.noStroke();
+                    p.fill(50);
+                    p.textSize(10);
+                    p.textAlign(p.CENTER, p.TOP);
+                    const label = nodeLabels[key] || key;
+                    // Place the label closer to the icon by using a smaller
+                    // vertical offset.  Reducing from +4 to +2 brings the
+                    // text nearer to the image while still leaving a small
+                    // gap for readability.
+                    // Draw the label just below the icon.  Use a 1‑pixel
+                    // vertical gap so the text is close to the bounding
+                    // box without touching the image itself.
+                    p.text(label, x, y + iconH / 2 + 1);
+                    continue;
+                  }} else {{
+                    // Fallback: draw a pastel rectangle if no icon
+                    const fillCol = nodeColors[key] || '#cccccc';
+                    p.fill(p.color(fillCol));
+                    p.stroke(180);
+                    p.rect(x - rectW/2, y - rectH/2, rectW, rectH, 5);
+                  }}
+                  // Draw the label below the icon/rectangle.  The vertical
+                  // offset uses the station icon height so that text always
+                  // appears below the image regardless of its aspect ratio.
                   p.noStroke();
                   p.fill(50);
                   p.textSize(10);
-                  p.textAlign(p.CENTER, p.CENTER);
-                  p.text(nodeLabels[key] || key, x, y);
+                  p.textAlign(p.CENTER, p.TOP);
+                  const label = nodeLabels[key] || key;
+                  // Align fallback labels consistently with icon labels by
+                  // using a small 1‑pixel vertical gap below the
+                  // bounding box height.
+                  p.text(label, x, y + stationBoundH / 2 + 1);
                 }}
                 // Draw queue squares to the left of the first station in each group
                 const queueSpacing = 0.15;
@@ -1346,9 +1733,12 @@ def main():
                   for (let i = 0; i < qlen; i++) {{
                     const offset = (i + 1) * queueSpacing * scaleX;
                     const x = baseX - rectW/2 - offset - queueSize;
+                    // Draw the queue square with a black outline for better visibility.
                     p.fill(p.color(nodeColors[repKey] || '#bbbbbb'));
-                    p.noStroke();
+                    p.stroke(0);
+                    p.strokeWeight(1);
                     p.rect(x, baseY - queueSize / 2, queueSize, queueSize);
+                    p.noStroke();
                   }}
                 }}
                 // Draw busy counters (top left)
@@ -1360,14 +1750,65 @@ def main():
                 p.textSize(12);
                 p.textAlign(p.LEFT, p.TOP);
                 p.text(busyText, 10, 10);
-                // Draw customers (moving dots)
+                // Draw customers (moving icons).  Each entry in ``frames`` now
+                // contains ``[x, y, partySize]``.  We scale the customer
+                // icon to fit within its bounding box while preserving
+                // aspect ratio and overlay the party size on top of the
+                // icon.  If the image is missing, we fall back to a
+                // coloured circle with a number.
                 const positions = frames[frameIndex] || [];
-                p.fill(0, 102, 204);
-                p.noStroke();
                 for (const pos of positions) {{
-                  const cx = pos[0] * scaleX;
-                  const cy = pos[1] * scaleY;
-                  p.ellipse(cx, cy, 10, 10);
+                    const cx = pos[0] * scaleX;
+                    const cy = pos[1] * scaleY;
+                    const party = (pos.length >= 3 && typeof pos[2] === 'number') ? pos[2] : 1;
+                    const custImg = icons['customer'];
+                    if (custImg) {{
+                        // Compute scale based on bounding dimensions; this will
+                        // enlarge smaller icons and shrink larger ones while
+                        // maintaining aspect ratio.
+                        const ratio = custImg.width / custImg.height;
+                        let customerW, customerH;
+                        if (ratio >= 1) {{
+                            customerW = customerBoundW;
+                            customerH = customerBoundW / ratio;
+                        }} else {{
+                            customerH = customerBoundH;
+                            customerW = customerBoundH * ratio;
+                        }}
+                        p.image(custImg, cx - customerW / 2, cy - customerH / 2, customerW, customerH);
+                        // Draw party size text with a slight shadow for contrast.
+                        p.textSize(10);
+                        p.textAlign(p.CENTER, p.CENTER);
+                        // Black shadow offset by one pixel.  Position the
+                        // party size number near the top of the icon by
+                        // using a vertical offset scaled to the current
+                        // bounding height.  When the customer icon is 35px
+                        // tall, a 5‑pixel offset (instead of 6) keeps
+                        // the number near the top of the icon after
+                        // cropping.  A small shadow improves
+                        // legibility against the icon.
+                        p.fill(0);
+                        // Adjust vertical offset for the party size number.  With a
+                        // smaller bounding box (30px height) the numeric label
+                        // needs to be nudged slightly lower to remain within
+                        // the head region of the icon.  Reduce the offset
+                        // from 5 pixels to 4 pixels to account for the
+                        // smaller customer icon.
+                        p.text(party.toString(), cx + 1, cy - customerH / 2 + 4 + 1);
+                        // White foreground for the party size
+                        p.fill(255);
+                        p.text(party.toString(), cx, cy - customerH / 2 + 4);
+                    }} else {{
+                        p.fill(0, 102, 204);
+                        p.noStroke();
+                        const r = 6;
+                        p.ellipse(cx, cy, r, r);
+                        // Party size on fallback circle
+                        p.fill(255);
+                        p.textSize(8);
+                        p.textAlign(p.CENTER, p.CENTER);
+                        p.text(party.toString(), cx, cy);
+                    }}
                 }}
                 if (!isPaused) {{
                   frameIndex++;
@@ -1408,6 +1849,7 @@ def main():
                 busy_caps=busy_caps_str,
                 fps_value=fps,
                 canvas_h=canvas_height,
+                icon_data=icon_data_str,
             )
         # Store results in session state so they persist on interactions
         st.session_state['results'] = results

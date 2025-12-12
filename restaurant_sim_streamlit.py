@@ -81,7 +81,7 @@ DOOR, KIOSK, REGISTER, PICKUP, DRINK, CONDIMENT, SEATING, EXIT = range(8)
 MEAN_ORDER_TIME     = 55  # kiosk
 MEAN_REGISTER_TIME  = 65  # register
 MEAN_COOK_TIME      = 250
-MEAN_EXPO_TIME      = 20
+MEAN_EXPO_TIME      = 10
 MEAN_DRINK_TIME     = 12
 MEAN_CONDIMENT_TIME = 10
 MEAN_DINE_TIME_MIN  = {1: 14, 2: 20, 3: 24, 4: 28}  # dine time (minutes) by party size
@@ -1180,7 +1180,7 @@ def main():
             help="Check to bypass the animation and display only summary results."
         )
         fps = st.select_slider(
-            "Animation FPS", options=[5, 10, 20], value=15
+            "Animation FPS", options=[5, 10, 15, 20], value=15
         )
         sim_speedup = st.slider(
             "Simulation speedup (minutes per second)", min_value=1, max_value=10, value=1, step=1,
