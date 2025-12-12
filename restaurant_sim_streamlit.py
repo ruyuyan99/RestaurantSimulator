@@ -1594,23 +1594,38 @@ def main():
                   const iconImg = icons[prefix] || null;
                   if (iconImg) {{
                     // Scale the icon to fit within the station bounding box while
-                    // preserving its original aspect ratio.  The longer side
-                    // (width or height) is limited by the corresponding
-                    // bounding dimension (stationBoundW or stationBoundH).
-                    const ratio = iconImg.width / iconImg.height;
-                    let iconW, iconH;
-                    if (ratio >= 1) {{
-                      // Image is wider than tall: limit width and scale height.
-                      iconW = stationBoundW;
-                      iconH = stationBoundW / ratio;
-                    }} else {{
-                      // Image is taller than wide: limit height and scale width.
-                      iconH = stationBoundH;
-                      iconW = stationBoundH * ratio;
-                    }}
+                    // preserving its original aspect ratio.  We only shrink
+                    // images that exceed the bounding box; smaller images are
+                    // drawn at their natural size to maintain crispness.
+                    const origW = iconImg.width;
+                    const origH = iconImg.height;
+                    // Compute scale factor based solely on the bounding box.  We
+                    // deliberately do not clamp to 1 here because we want
+                    // smaller icons to be scaled up to fill the available
+                    // bounding box.  Combined with noSmooth() this
+                    // eliminates blurriness for icons with lower native
+                    // resolution.  See discussion in the code comments for
+                    // details.
+                    const scale = Math.min(stationBoundW / origW, stationBoundH / origH);
+                    const iconW = origW * scale;
+                    const iconH = origH * scale;
                     // Draw the icon centred horizontally and slightly above
                     // the y position so that the label can fit below.
                     p.image(iconImg, x - iconW / 2, y - iconH / 2 - 5, iconW, iconH);
+                    // Draw the label closer to the bounding box.  Use the
+                    // actual icon height rather than the bounding height to
+                    // position the text more closely beneath the image.
+                    p.noStroke();
+                    p.fill(50);
+                    p.textSize(10);
+                    p.textAlign(p.CENTER, p.TOP);
+                    const label = nodeLabels[key] || key;
+                    // Place the label closer to the icon by using a smaller
+                    // vertical offset.  Reducing from +4 to +2 brings the
+                    // text nearer to the image while still leaving a small
+                    // gap for readability.
+                    p.text(label, x, y + iconH / 2 + 2);
+                    continue;
                   }} else {{
                     // Fallback: draw a pastel rectangle if no icon
                     const fillCol = nodeColors[key] || '#cccccc';
