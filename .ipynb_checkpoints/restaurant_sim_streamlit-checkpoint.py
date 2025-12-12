@@ -1090,7 +1090,7 @@ def main():
     global MEAN_EXPO_TIME, MEAN_DRINK_TIME, MEAN_CONDIMENT_TIME, MEAN_DINE_TIME_MIN
     global PARTY_SIZE_WEIGHTS
 
-    st.set_page_config(page_title="Restaurant DES with p5.js Animation", layout="wide")
+    st.set_page_config(page_title="Restaurant Simulator", layout="wide")
     st.title("🍽️ Restaurant Discrete Event Simulation with Interactive Animation")
     st.write(
         "This interactive app simulates a fast casual restaurant. Adjust the\n"
