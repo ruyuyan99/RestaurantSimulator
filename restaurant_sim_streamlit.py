@@ -1401,10 +1401,11 @@ def main():
                 'expo': caps.get('expo', 1),
             }
             # ------------------------------------------------------------------
-            # Load JPEG icons and prepare data URIs for each resource type.  We
+            # Load PNG icons and prepare data URIs for each resource type.  We
             # embed these as base64 strings so they can be loaded by p5.js in
             # the browser without separate file requests.  The icons reside in
-            # the current working directory (uploaded by the user).  We map
+            # the ``assets`` folder relative to this script (JPEG versions have
+            # been moved to an ``assets/jpegs`` subfolder and are ignored).  We map
             # plural resource keys to singular filenames for clarity.
             import base64, os
             def load_icon(name: str) -> str:
@@ -1455,14 +1456,16 @@ def main():
             # load_icon helper detects file extensions and returns an
             # appropriate MIME type (image/png vs image/jpeg).
             icon_data = {
-                'kiosk': load_icon('kiosk.jpg'),
-                'register': load_icon('register.jpg'),
-                'chef': load_icon('chef.jpg'),
-                'expo': load_icon('expo.jpg'),
-                'drink_station': load_icon('drink_station.jpg'),
-                'condiment_station': load_icon('condiment_station.jpg'),
-                'door': load_icon('door.jpg'),
-                'table': load_icon('table.jpg'),
+                # Use only PNG versions of the icons.  JPEG files are located
+                # in ``assets/jpegs`` and are deliberately ignored.
+                'kiosk': load_icon('kiosk.png'),
+                'register': load_icon('register.png'),
+                'chef': load_icon('chef.png'),
+                'expo': load_icon('expo.png'),
+                'drink_station': load_icon('drink_station.png'),
+                'condiment_station': load_icon('condiment_station.png'),
+                'door': load_icon('door.png'),
+                'table': load_icon('table.png'),
                 # Use customer2.png for the customer icon.  We ignore customer.png.
                 'customer': load_icon('customer2.png'),
             }
