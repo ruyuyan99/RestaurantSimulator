@@ -1569,15 +1569,19 @@ def main():
                 // the form "resource_index" (e.g. "kiosks_0").  We derive
                 // the resource prefix to look up the correct icon.  If an
                 // icon is missing for a given prefix, nothing will be drawn.
-                // Define station icon height (fixed).  The width will be computed
-                // dynamically from the inherent aspect ratio of the image to avoid
-                // distortion.  A smaller height reduces the visual footprint of
-                // each node on the canvas.
-                const stationIconH = 80;
-                // Define customer icon height (fixed).  Customer width will be computed
-                // from the inherent aspect ratio of the customer image.  A smaller
-                // height reduces the size of each customer icon.
-                const customerIconH = 65;
+                // Define bounding box dimensions for station icons.  Each station
+                // icon will be scaled to fit within this box while maintaining
+                // its original aspect ratio.  Using a fixed bounding height and
+                // width ensures that all station icons occupy the same visual
+                // footprint regardless of their original size.
+                const stationBoundW = 80;
+                const stationBoundH = 80;
+                // Define bounding box dimensions for customer icons.  Each
+                // customer icon will be scaled to fit within this box while
+                // maintaining its aspect ratio.  This keeps customer icons
+                // consistent in size relative to other elements.
+                const customerBoundW = 65;
+                const customerBoundH = 65;
                 for (const key in nodePositions) {{
                   const pos = nodePositions[key];
                   const x = pos[0] * scaleX;
@@ -1589,13 +1593,24 @@ def main():
                   }}
                   const iconImg = icons[prefix] || null;
                   if (iconImg) {{
-                    // Compute the display width using the original aspect ratio.
+                    // Scale the icon to fit within the station bounding box while
+                    // preserving its original aspect ratio.  The longer side
+                    // (width or height) is limited by the corresponding
+                    // bounding dimension (stationBoundW or stationBoundH).
                     const ratio = iconImg.width / iconImg.height;
-                    const iconW = ratio * stationIconH;
-                    const iconH = stationIconH;
+                    let iconW, iconH;
+                    if (ratio >= 1) {{
+                      // Image is wider than tall: limit width and scale height.
+                      iconW = stationBoundW;
+                      iconH = stationBoundW / ratio;
+                    }} else {{
+                      // Image is taller than wide: limit height and scale width.
+                      iconH = stationBoundH;
+                      iconW = stationBoundH * ratio;
+                    }}
                     // Draw the icon centred horizontally and slightly above
                     // the y position so that the label can fit below.
-                    p.image(iconImg, x - iconW/2, y - iconH/2 - 5, iconW, iconH);
+                    p.image(iconImg, x - iconW / 2, y - iconH / 2 - 5, iconW, iconH);
                   }} else {{
                     // Fallback: draw a pastel rectangle if no icon
                     const fillCol = nodeColors[key] || '#cccccc';
@@ -1611,7 +1626,7 @@ def main():
                   p.textSize(10);
                   p.textAlign(p.CENTER, p.TOP);
                   const label = nodeLabels[key] || key;
-                  p.text(label, x, y + stationIconH/2 + 2);
+                  p.text(label, x, y + stationBoundH / 2 + 2);
                 }}
                 // Draw queue squares to the left of the first station in each group
                 const queueSpacing = 0.15;
@@ -1658,10 +1673,20 @@ def main():
                     const cy = pos[1] * scaleY;
                     const custImg = icons['customer'];
                     if (custImg) {{
-                        // Compute customer display width using aspect ratio.
+                        // Scale the customer icon to fit within its bounding box while
+                        // maintaining its aspect ratio.  Limit by the larger of
+                        // width or height and compute the other dimension accordingly.
                         const ratio = custImg.width / custImg.height;
-                        const customerW = ratio * customerIconH;
-                        const customerH = customerIconH;
+                        let customerW, customerH;
+                        if (ratio >= 1) {{
+                            // Wider than tall: limit width and scale height.
+                            customerW = customerBoundW;
+                            customerH = customerBoundW / ratio;
+                        }} else {{
+                            // Taller than wide: limit height and scale width.
+                            customerH = customerBoundH;
+                            customerW = customerBoundH * ratio;
+                        }}
                         // Draw the customer icon centred at the position
                         p.image(custImg, cx - customerW / 2, cy - customerH / 2, customerW, customerH);
                     }} else {{
