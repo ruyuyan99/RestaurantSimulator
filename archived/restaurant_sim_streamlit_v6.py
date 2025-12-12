@@ -48,7 +48,7 @@ import salabim as sim
 DEFAULT_SIM_HOURS = 4
 
 # Default arrival rate (customers per minute)
-DEFAULT_ARRIVAL_RATE = 1.2
+DEFAULT_ARRIVAL_RATE = 1.0
 
 # Default party size distribution
 PARTY_SIZE_WEIGHTS: List[Tuple[int, float]] = [
@@ -59,7 +59,7 @@ PARTY_SIZE_WEIGHTS: List[Tuple[int, float]] = [
 ]
 
 # Walking speed (m/s)
-WALK_SPEED_MPS = 1.2
+WALK_SPEED_MPS = 1.0
 
 # Distances between nodes (m).  These are used to compute walking times.
 # Nodes: DOOR, KIOSK, REGISTER, PICKUP, DRINK, CONDIMENT, SEATING, EXIT
@@ -1140,25 +1140,25 @@ def main():
         )
     with st.sidebar.expander("Resource capacities", expanded=True):
         n_kiosks = st.number_input(
-            "Number of kiosks", min_value=0, max_value=20, value=6, step=1
+            "Number of kiosks", min_value=0, max_value=20, value=2, step=1
         )
         n_registers = st.number_input(
             "Number of registers", min_value=0, max_value=20, value=2, step=1
         )
         n_cooks = st.number_input(
-            "Number of cooks", min_value=0, max_value=20, value=5, step=1
+            "Number of cooks", min_value=0, max_value=20, value=4, step=1
         )
         n_expo = st.number_input(
             "Number of expo staff", min_value=0, max_value=20, value=1, step=1
         )
         n_drinks = st.number_input(
-            "Number of drink stations", min_value=0, max_value=20, value=2, step=1
+            "Number of drink stations", min_value=0, max_value=20, value=1, step=1
         )
         n_condiments = st.number_input(
-            "Number of condiment stations", min_value=0, max_value=20, value=2, step=1
+            "Number of condiment stations", min_value=0, max_value=20, value=1, step=1
         )
         table_cap = st.number_input(
-            "Total seats (sum over tables)", min_value=0, max_value=200,
+            "Total Tables", min_value=0, max_value=200,
             value=sum({2: 18, 4: 10}.values()) * 2, step=2
         )
     with st.sidebar.expander("Service times (mean in seconds)", expanded=True):
@@ -1169,10 +1169,10 @@ def main():
         mean_drink_time = st.number_input("Drink station time", min_value=1, max_value=600, value=MEAN_DRINK_TIME, step=1)
         mean_condiment_time = st.number_input("Condiment station time", min_value=1, max_value=600, value=MEAN_CONDIMENT_TIME, step=1)
         st.markdown("**Dining times (mean minutes) by party size**")
-        dine1 = st.number_input("Party of 1", min_value=1.0, max_value=120.0, value=float(MEAN_DINE_TIME_MIN.get(1, 14)), step=1.0)
-        dine2 = st.number_input("Party of 2", min_value=1.0, max_value=120.0, value=float(MEAN_DINE_TIME_MIN.get(2, 20)), step=1.0)
-        dine3 = st.number_input("Party of 3", min_value=1.0, max_value=120.0, value=float(MEAN_DINE_TIME_MIN.get(3, 24)), step=1.0)
-        dine4 = st.number_input("Party of 4", min_value=1.0, max_value=120.0, value=float(MEAN_DINE_TIME_MIN.get(4, 28)), step=1.0)
+        dine1 = st.number_input("Party of 1", min_value=1, max_value=120, value=7, step=1)
+        dine2 = st.number_input("Party of 2", min_value=1, max_value=120, value=10, step=1)
+        dine3 = st.number_input("Party of 3", min_value=1, max_value=120, value=12, step=1)
+        dine4 = st.number_input("Party of 4", min_value=1, max_value=120, value=14, step=1)
     with st.sidebar.expander("Animation controls", expanded=True):
         skip_animation = st.checkbox(
             "Skip animation",
@@ -1438,7 +1438,7 @@ def main():
                 Parameters
                 ----------
                 name : str
-                    Filename of the icon (e.g. ``'kiosk.jpg'``).
+                    Filename of the icon (e.g. ``'kiosk.png'``).
 
                 Returns
                 -------
@@ -1603,21 +1603,8 @@ def main():
                 // underlying images have been cropped and contain less
                 // whitespace.  A smaller bounding box (60×60) keeps the
                 // effective size of each icon similar to before cropping.
-                // After cropping whitespace from the icons, they appear
-                // relatively larger.  Reduce the bounding box for each
-                // station icon so that the final drawn size remains
-                // visually balanced.  Using 50×50 instead of 60×60
-                // compensates for the tighter crop while still keeping
-                // the icons legible.
-                // Shrink the bounding boxes further for station icons.  Now that
-                // the underlying assets have been tightly cropped, the
-                // previous 50×50 bounding box allows the icons to dominate
-                // the scene.  Reduce the dimensions to 45×45 so that
-                // stations maintain a consistent footprint across different
-                // asset sizes.  Icons will be scaled up or down to fit
-                // within this box while preserving their aspect ratio.
-                const stationBoundW = 45;
-                const stationBoundH = 45;
+                const stationBoundW = 60;
+                const stationBoundH = 60;
                 // Define bounding box dimensions for customer icons.  Each
                 // customer icon will be scaled to fit within this box while
                 // maintaining its aspect ratio.  This keeps customer icons
@@ -1632,19 +1619,8 @@ def main():
                 // below define the maximum size of the customer icon.  The
                 // actual drawn size is computed from the original aspect
                 // ratio and will not exceed these bounds.
-                // Similarly shrink the bounding box for customer icons.
-                // Cropped customer icons contain less padding, so we
-                // reduce their maximum size to 35×35 (from 45×45) to
-                // maintain the visual hierarchy between stations and
-                // customers.  The actual rendered size is determined
-                // from this bounding box and the image's aspect ratio.
-                // Customer icons are also cropped more tightly now.  To keep
-                // them visually subordinate to station icons, reduce
-                // the bounding box to 30×30.  The icon will be scaled to
-                // fit within this box, ensuring customers remain smaller
-                // than stations even after cropping.
-                const customerBoundW = 30;
-                const customerBoundH = 30;
+                const customerBoundW = 45;
+                const customerBoundH = 45;
                 for (const key in nodePositions) {{
                   const pos = nodePositions[key];
                   const x = pos[0] * scaleX;
@@ -1782,22 +1758,15 @@ def main():
                         // Black shadow offset by one pixel.  Position the
                         // party size number near the top of the icon by
                         // using a vertical offset scaled to the current
-                        // bounding height.  When the customer icon is 35px
-                        // tall, a 5‑pixel offset (instead of 6) keeps
-                        // the number near the top of the icon after
-                        // cropping.  A small shadow improves
-                        // legibility against the icon.
+                        // bounding height.  With a 45px high icon a
+                        // 6‑pixel offset (instead of 8) keeps the number
+                        // roughly in the same relative position as before
+                        // cropping.
                         p.fill(0);
-                        // Adjust vertical offset for the party size number.  With a
-                        // smaller bounding box (30px height) the numeric label
-                        // needs to be nudged slightly lower to remain within
-                        // the head region of the icon.  Reduce the offset
-                        // from 5 pixels to 4 pixels to account for the
-                        // smaller customer icon.
-                        p.text(party.toString(), cx + 1, cy - customerH / 2 + 4 + 1);
-                        // White foreground for the party size
+                        p.text(party.toString(), cx + 1, cy - customerH / 2 + 6 + 1);
+                        // White foreground
                         p.fill(255);
-                        p.text(party.toString(), cx, cy - customerH / 2 + 4);
+                        p.text(party.toString(), cx, cy - customerH / 2 + 6);
                     }} else {{
                         p.fill(0, 102, 204);
                         p.noStroke();
