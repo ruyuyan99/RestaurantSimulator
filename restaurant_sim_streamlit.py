@@ -33,7 +33,7 @@ and can scale to many customers without overloading the server.
 import json
 import random
 import statistics
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Any
 
 import numpy as np
 import pandas as pd
@@ -463,6 +463,8 @@ def simulate_customers(
     busy_ts : Dict[str, numpy.ndarray]
         For each resource name, a 1‑D array of busy server counts
         sampled every second.
+    party_sizes : List[int]
+        A list of party sizes corresponding to each customer in ``segments``.
     """
     # Define node coordinates based on the earlier animation positions
     # and normalise them to [0, 10] x [0, 4] for plotting convenience.
@@ -594,6 +596,10 @@ def simulate_customers(
         arrival_times.append(t)
 
     segments: List[List[Dict[str, float]]] = []
+    # Track the party size for each customer.  We append the party size
+    # alongside the segments list so that the party size can be used later
+    # for display purposes (e.g. drawing the number on the customer icon).
+    party_sizes: List[int] = []
 
     for arrival_time in arrival_times:
         # Stop generating segments after the animation window
@@ -605,6 +611,8 @@ def simulate_customers(
 
         # Draw party size and decide kiosk vs register
         party = party_size()
+        # Record the party size for this customer
+        party_sizes.append(party)
         to_kiosk = (random.random() < pct_to_kiosk) and (capacities.get('kiosks', 0) > 0)
         first = KIOSK if to_kiosk else REGISTER
 
@@ -964,7 +972,7 @@ def simulate_customers(
             arr[i] = b
         busy_ts[key] = arr
 
-    return segments, queue_ts, busy_ts
+    return segments, queue_ts, busy_ts, party_sizes
 
 
 def generate_animation_frames(
@@ -974,7 +982,8 @@ def generate_animation_frames(
     capacities: Dict[str, int],
     anim_seconds: float,
     dt: float = 0.5,
-) -> Tuple[List[List[Tuple[float, float]]], Dict[str, List[float]], Dict[str, List[float]]]:
+    party_sizes: List[int] | None = None,
+) -> Tuple[List[List[Tuple[float, float, int]]], Dict[str, List[float]], Dict[str, List[float]]]:
     """Generate per-frame positions and queue/busy series at a specified time step.
 
     Parameters
@@ -1007,19 +1016,24 @@ def generate_animation_frames(
     num_frames = int(anim_seconds / dt) + 1
     times = np.linspace(0.0, anim_seconds, num_frames)
 
-    # Prepare per-customer state to track which segment index applies at time t
-    customer_states = []
-    for cust_segments in segments:
+    # Prepare per-customer state to track which segment index applies at time t.
+    # If party_sizes is provided, include it in the state so we can annotate
+    # customers with their party size in the animation.
+    customer_states: List[Dict[str, Any]] = []
+    for idx, cust_segments in enumerate(segments):
         if cust_segments:
-            customer_states.append({'segments': cust_segments, 'index': 0})
+            state: Dict[str, Any] = {'segments': cust_segments, 'index': 0}
+            if party_sizes is not None and idx < len(party_sizes):
+                state['party'] = party_sizes[idx]
+            customer_states.append(state)
 
-    frames: List[List[Tuple[float, float]]] = []
+    frames: List[List[Tuple[float, float, int]]] = []
     # Queue and busy series lists
     queue_series: Dict[str, List[float]] = {key: [] for key in queue_ts.keys()}
     busy_series: Dict[str, List[float]] = {key: [] for key in busy_ts.keys()}
 
     for t in times:
-        positions: List[Tuple[float, float]] = []
+        positions: List[Tuple[float, float, int]] = []
         for state in customer_states:
             segs = state['segments']
             i = state['index']
@@ -1030,13 +1044,16 @@ def generate_animation_frames(
             if i < len(segs) and segs[i]['start_time'] <= t < segs[i]['end_time']:
                 seg = segs[i]
                 if seg['wait'] or seg['end_time'] == seg['start_time']:
-                    positions.append((seg['x0'], seg['y0']))
+                    # Use the party size if available, otherwise default to 1.
+                    party = state.get('party', 1)
+                    positions.append((seg['x0'], seg['y0'], party))
                 else:
                     # Linear interpolation along the path
                     frac = (t - seg['start_time']) / (seg['end_time'] - seg['start_time']) if seg['end_time'] > seg['start_time'] else 0.0
                     x = seg['x0'] + frac * (seg['x1'] - seg['x0'])
                     y = seg['y0'] + frac * (seg['y1'] - seg['y0'])
-                    positions.append((x, y))
+                    party = state.get('party', 1)
+                    positions.append((x, y, party))
         frames.append(positions)
         # Append queue lengths (sampled at integer seconds)
         idx_sec = int(min(max(int(t), 0), len(queue_ts['kiosks']) - 1))
@@ -1232,7 +1249,7 @@ def main():
             }
             anim_seconds = sim_hours * 3600.0
             # Run custom simulation to obtain segments and queue/busy time series
-            segs, qts, bts = simulate_customers(
+            segs, qts, bts, party_sizes = simulate_customers(
                 sim_hours=sim_hours,
                 arrival_rate=arrival_rate,
                 capacities=caps,
@@ -1248,6 +1265,7 @@ def main():
                 capacities=caps,
                 anim_seconds=anim_seconds,
                 dt=dt,
+                party_sizes=party_sizes,
             )
             # Serialise frame and series data for JavaScript
             frames_list = [[list(pos) for pos in frame] for frame in frames]
@@ -1574,14 +1592,35 @@ def main():
                 // its original aspect ratio.  Using a fixed bounding height and
                 // width ensures that all station icons occupy the same visual
                 // footprint regardless of their original size.
-                const stationBoundW = 80;
-                const stationBoundH = 80;
+                // Bounding box for station icons.  The height and width control
+                // the maximum size of each icon.  The icons will be
+                // scaled down or up to fit within this box while
+                // preserving their aspect ratio.  These values can be
+                // adjusted to control the apparent size of all station
+                // icons.  We shrink them slightly to compensate for
+                // cropped images that contain less whitespace.
+                // Shrink the bounding boxes for station icons now that the
+                // underlying images have been cropped and contain less
+                // whitespace.  A smaller bounding box (60×60) keeps the
+                // effective size of each icon similar to before cropping.
+                const stationBoundW = 60;
+                const stationBoundH = 60;
                 // Define bounding box dimensions for customer icons.  Each
                 // customer icon will be scaled to fit within this box while
                 // maintaining its aspect ratio.  This keeps customer icons
                 // consistent in size relative to other elements.
-                const customerBoundW = 65;
-                const customerBoundH = 65;
+                // Bounding box for customer icons.  Customers are drawn
+                // smaller than stations.  These values can be tweaked to
+                // adjust the size of the customer icons.  We set them
+                // slightly smaller now that icons have been cropped.
+                // Customer icons also appear larger after cropping.  Reduce
+                // their bounding box to 45×45 so that the characters do
+                // not dominate the layout.  The width and height values
+                // below define the maximum size of the customer icon.  The
+                // actual drawn size is computed from the original aspect
+                // ratio and will not exceed these bounds.
+                const customerBoundW = 45;
+                const customerBoundH = 45;
                 for (const key in nodePositions) {{
                   const pos = nodePositions[key];
                   const x = pos[0] * scaleX;
@@ -1624,7 +1663,10 @@ def main():
                     // vertical offset.  Reducing from +4 to +2 brings the
                     // text nearer to the image while still leaving a small
                     // gap for readability.
-                    p.text(label, x, y + iconH / 2 + 2);
+                    // Draw the label just below the icon.  Use a 1‑pixel
+                    // vertical gap so the text is close to the bounding
+                    // box without touching the image itself.
+                    p.text(label, x, y + iconH / 2 + 1);
                     continue;
                   }} else {{
                     // Fallback: draw a pastel rectangle if no icon
@@ -1641,7 +1683,10 @@ def main():
                   p.textSize(10);
                   p.textAlign(p.CENTER, p.TOP);
                   const label = nodeLabels[key] || key;
-                  p.text(label, x, y + stationBoundH / 2 + 2);
+                  // Align fallback labels consistently with icon labels by
+                  // using a small 1‑pixel vertical gap below the
+                  // bounding box height.
+                  p.text(label, x, y + stationBoundH / 2 + 1);
                 }}
                 // Draw queue squares to the left of the first station in each group
                 const queueSpacing = 0.15;
@@ -1681,34 +1726,57 @@ def main():
                 p.textSize(12);
                 p.textAlign(p.LEFT, p.TOP);
                 p.text(busyText, 10, 10);
-                // Draw customers (moving dots)
+                // Draw customers (moving icons).  Each entry in ``frames`` now
+                // contains ``[x, y, partySize]``.  We scale the customer
+                // icon to fit within its bounding box while preserving
+                // aspect ratio and overlay the party size on top of the
+                // icon.  If the image is missing, we fall back to a
+                // coloured circle with a number.
                 const positions = frames[frameIndex] || [];
                 for (const pos of positions) {{
                     const cx = pos[0] * scaleX;
                     const cy = pos[1] * scaleY;
+                    const party = (pos.length >= 3 && typeof pos[2] === 'number') ? pos[2] : 1;
                     const custImg = icons['customer'];
                     if (custImg) {{
-                        // Scale the customer icon to fit within its bounding box while
-                        // maintaining its aspect ratio.  Limit by the larger of
-                        // width or height and compute the other dimension accordingly.
+                        // Compute scale based on bounding dimensions; this will
+                        // enlarge smaller icons and shrink larger ones while
+                        // maintaining aspect ratio.
                         const ratio = custImg.width / custImg.height;
                         let customerW, customerH;
                         if (ratio >= 1) {{
-                            // Wider than tall: limit width and scale height.
                             customerW = customerBoundW;
                             customerH = customerBoundW / ratio;
                         }} else {{
-                            // Taller than wide: limit height and scale width.
                             customerH = customerBoundH;
                             customerW = customerBoundH * ratio;
                         }}
-                        // Draw the customer icon centred at the position
                         p.image(custImg, cx - customerW / 2, cy - customerH / 2, customerW, customerH);
+                        // Draw party size text with a slight shadow for contrast.
+                        p.textSize(10);
+                        p.textAlign(p.CENTER, p.CENTER);
+                        // Black shadow offset by one pixel.  Position the
+                        // party size number near the top of the icon by
+                        // using a vertical offset scaled to the current
+                        // bounding height.  With a 45px high icon a
+                        // 6‑pixel offset (instead of 8) keeps the number
+                        // roughly in the same relative position as before
+                        // cropping.
+                        p.fill(0);
+                        p.text(party.toString(), cx + 1, cy - customerH / 2 + 6 + 1);
+                        // White foreground
+                        p.fill(255);
+                        p.text(party.toString(), cx, cy - customerH / 2 + 6);
                     }} else {{
-                        // Fallback: draw a blue circle if no image
                         p.fill(0, 102, 204);
                         p.noStroke();
-                        p.ellipse(cx, cy, 10, 10);
+                        const r = 6;
+                        p.ellipse(cx, cy, r, r);
+                        // Party size on fallback circle
+                        p.fill(255);
+                        p.textSize(8);
+                        p.textAlign(p.CENTER, p.CENTER);
+                        p.text(party.toString(), cx, cy);
                     }}
                 }}
                 if (!isPaused) {{
