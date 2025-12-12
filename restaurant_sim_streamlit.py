@@ -48,7 +48,7 @@ import salabim as sim
 DEFAULT_SIM_HOURS = 4
 
 # Default arrival rate (customers per minute)
-DEFAULT_ARRIVAL_RATE = 1.2
+DEFAULT_ARRIVAL_RATE = 1.0
 
 # Default party size distribution
 PARTY_SIZE_WEIGHTS: List[Tuple[int, float]] = [
@@ -59,7 +59,7 @@ PARTY_SIZE_WEIGHTS: List[Tuple[int, float]] = [
 ]
 
 # Walking speed (m/s)
-WALK_SPEED_MPS = 1.2
+WALK_SPEED_MPS = 1.0
 
 # Distances between nodes (m).  These are used to compute walking times.
 # Nodes: DOOR, KIOSK, REGISTER, PICKUP, DRINK, CONDIMENT, SEATING, EXIT
@@ -80,7 +80,7 @@ DOOR, KIOSK, REGISTER, PICKUP, DRINK, CONDIMENT, SEATING, EXIT = range(8)
 # Mean service times (seconds)
 MEAN_ORDER_TIME     = 55  # kiosk
 MEAN_REGISTER_TIME  = 65  # register
-MEAN_COOK_TIME      = 210
+MEAN_COOK_TIME      = 200
 MEAN_EXPO_TIME      = 20
 MEAN_DRINK_TIME     = 12
 MEAN_CONDIMENT_TIME = 10
@@ -1140,26 +1140,26 @@ def main():
         )
     with st.sidebar.expander("Resource capacities", expanded=True):
         n_kiosks = st.number_input(
-            "Number of kiosks", min_value=0, max_value=20, value=6, step=1
+            "Number of kiosks", min_value=0, max_value=20, value=2, step=1
         )
         n_registers = st.number_input(
             "Number of registers", min_value=0, max_value=20, value=2, step=1
         )
         n_cooks = st.number_input(
-            "Number of cooks", min_value=0, max_value=20, value=5, step=1
+            "Number of cooks", min_value=0, max_value=20, value=4, step=1
         )
         n_expo = st.number_input(
             "Number of expo staff", min_value=0, max_value=20, value=1, step=1
         )
         n_drinks = st.number_input(
-            "Number of drink stations", min_value=0, max_value=20, value=2, step=1
+            "Number of drink stations", min_value=0, max_value=20, value=1, step=1
         )
         n_condiments = st.number_input(
-            "Number of condiment stations", min_value=0, max_value=20, value=2, step=1
+            "Number of condiment stations", min_value=0, max_value=20, value=1, step=1
         )
         table_cap = st.number_input(
-            "Total seats (sum over tables)", min_value=0, max_value=200,
-            value=sum({2: 18, 4: 10}.values()) * 2, step=2
+            "Total Tables", min_value=0, max_value=200,
+            value=40, step=2
         )
     with st.sidebar.expander("Service times (mean in seconds)", expanded=True):
         mean_order_time = st.number_input("Order time at kiosk", min_value=1, max_value=600, value=MEAN_ORDER_TIME, step=1)
@@ -1169,10 +1169,10 @@ def main():
         mean_drink_time = st.number_input("Drink station time", min_value=1, max_value=600, value=MEAN_DRINK_TIME, step=1)
         mean_condiment_time = st.number_input("Condiment station time", min_value=1, max_value=600, value=MEAN_CONDIMENT_TIME, step=1)
         st.markdown("**Dining times (mean minutes) by party size**")
-        dine1 = st.number_input("Party of 1", min_value=1.0, max_value=120.0, value=float(MEAN_DINE_TIME_MIN.get(1, 14)), step=1.0)
-        dine2 = st.number_input("Party of 2", min_value=1.0, max_value=120.0, value=float(MEAN_DINE_TIME_MIN.get(2, 20)), step=1.0)
-        dine3 = st.number_input("Party of 3", min_value=1.0, max_value=120.0, value=float(MEAN_DINE_TIME_MIN.get(3, 24)), step=1.0)
-        dine4 = st.number_input("Party of 4", min_value=1.0, max_value=120.0, value=float(MEAN_DINE_TIME_MIN.get(4, 28)), step=1.0)
+        dine1 = st.number_input("Party of 1", min_value=1.0, max_value=120, value=7, step=1.0)
+        dine2 = st.number_input("Party of 2", min_value=1.0, max_value=120, value=10, step=1.0)
+        dine3 = st.number_input("Party of 3", min_value=1.0, max_value=120, value=12, step=1.0)
+        dine4 = st.number_input("Party of 4", min_value=1.0, max_value=120, value=14, step=1.0)
     with st.sidebar.expander("Animation controls", expanded=True):
         skip_animation = st.checkbox(
             "Skip animation",
