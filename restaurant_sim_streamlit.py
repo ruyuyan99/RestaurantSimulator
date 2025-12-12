@@ -1571,11 +1571,13 @@ def main():
                 // icon is missing for a given prefix, nothing will be drawn.
                 // Define station icon height (fixed).  The width will be computed
                 // dynamically from the inherent aspect ratio of the image to avoid
-                // distortion.  A larger height makes icons clearer.
-                const stationIconH = 100;
+                // distortion.  A smaller height reduces the visual footprint of
+                // each node on the canvas.
+                const stationIconH = 80;
                 // Define customer icon height (fixed).  Customer width will be computed
-                // from the inherent aspect ratio of the customer image.
-                const customerIconH = 80;
+                // from the inherent aspect ratio of the customer image.  A smaller
+                // height reduces the size of each customer icon.
+                const customerIconH = 65;
                 for (const key in nodePositions) {{
                   const pos = nodePositions[key];
                   const x = pos[0] * scaleX;
